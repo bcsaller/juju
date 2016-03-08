@@ -58,12 +58,12 @@ func (s *KillSuite) TestKillUnknownArgument(c *gc.C) {
 
 func (s *KillSuite) TestKillUnknownController(c *gc.C) {
 	_, err := s.runKillCommand(c, "foo")
-	c.Assert(err, gc.ErrorMatches, `cannot read controller info: model "foo:foo" not found`)
+	c.Assert(err, gc.ErrorMatches, `controller foo not found`)
 }
 
 func (s *KillSuite) TestKillNonControllerEnvFails(c *gc.C) {
 	_, err := s.runKillCommand(c, "test2")
-	c.Assert(err, gc.ErrorMatches, "\"test2\" is not a controller; use juju model destroy to destroy it")
+	c.Assert(err, gc.ErrorMatches, "\"test2\" is not a controller; use juju destroy-model to destroy it")
 }
 
 func (s *KillSuite) TestKillCannotConnectToAPISucceeds(c *gc.C) {
@@ -124,6 +124,12 @@ func (s *KillSuite) TestKillCommandConfirmation(c *gc.C) {
 	}
 	c.Check(testing.Stdout(ctx), gc.Matches, "WARNING!.*local.test1(.|\n)*")
 	checkControllerExistsInStore(c, "local.test1:test1", s.legacyStore)
+}
+
+func (s *KillSuite) TestKillCommandControllerAlias(c *gc.C) {
+	_, err := testing.RunCommand(c, s.newKillCommand(), "local.test1", "-y")
+	c.Assert(err, jc.ErrorIsNil)
+	checkControllerRemovedFromStore(c, "local.test1:test1", s.legacyStore)
 }
 
 func (s *KillSuite) TestKillAPIPermErrFails(c *gc.C) {
@@ -195,7 +201,7 @@ func (s *KillSuite) TestControllerStatus(c *gc.C) {
 
 	ctrStatus, envsStatus, err := controller.NewData(s.api, "123")
 	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(ctrStatus.HostedEnvCount, gc.Equals, 2)
+	c.Assert(ctrStatus.HostedModelCount, gc.Equals, 2)
 	c.Assert(ctrStatus.HostedMachineCount, gc.Equals, 6)
 	c.Assert(ctrStatus.ServiceCount, gc.Equals, 3)
 	c.Assert(envsStatus, gc.HasLen, 2)
@@ -241,7 +247,7 @@ func (s *KillSuite) TestFmtControllerStatus(c *gc.C) {
 }
 
 func (s *KillSuite) TestFmtEnvironStatus(c *gc.C) {
-	data := controller.EnvData{
+	data := controller.ModelData{
 		"owner@local",
 		"envname",
 		params.Dying,
@@ -249,6 +255,6 @@ func (s *KillSuite) TestFmtEnvironStatus(c *gc.C) {
 		1,
 	}
 
-	out := controller.FmtEnvStatus(data)
+	out := controller.FmtModelStatus(data)
 	c.Assert(out, gc.Equals, "owner@local/envname (dying), 8 machines, 1 service")
 }

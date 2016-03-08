@@ -36,7 +36,7 @@ type CreateModelCommand struct {
 // NewCreateModelCommandForTest returns a CreateModelCommand with
 // the api provided as specified.
 func NewCreateModelCommandForTest(
-	api CreateEnvironmentAPI,
+	api CreateModelAPI,
 	store jujuclient.ClientStore,
 	parser func(interface{}) (interface{}, error),
 ) (cmd.Command, *CreateModelCommand) {
@@ -48,14 +48,16 @@ func NewCreateModelCommandForTest(
 	return modelcmd.WrapController(c), &CreateModelCommand{c}
 }
 
-// NewModelsCommandForTest returns a EnvironmentsCommand with the API
+// NewListModelsCommandForTest returns a EnvironmentsCommand with the API
 // and userCreds provided as specified.
-func NewModelsCommandForTest(modelAPI ModelManagerAPI, sysAPI ModelsSysAPI, userCreds *configstore.APICredentials) cmd.Command {
-	return modelcmd.WrapController(&environmentsCommand{
+func NewListModelsCommandForTest(modelAPI ModelManagerAPI, sysAPI ModelsSysAPI, store jujuclient.ClientStore, userCreds *configstore.APICredentials) cmd.Command {
+	c := &modelsCommand{
 		modelAPI:  modelAPI,
 		sysAPI:    sysAPI,
 		userCreds: userCreds,
-	})
+	}
+	c.SetClientStore(store)
+	return modelcmd.WrapController(c)
 }
 
 // NewRegisterCommandForTest returns a RegisterCommand with the function used
@@ -66,10 +68,12 @@ func NewRegisterCommandForTest(apiOpen api.OpenFunc, newAPIRoot modelcmd.OpenFun
 
 // NewRemoveBlocksCommandForTest returns a RemoveBlocksCommand with the
 // function used to open the API connection mocked out.
-func NewRemoveBlocksCommandForTest(api removeBlocksAPI) cmd.Command {
-	return modelcmd.WrapController(&removeBlocksCommand{
+func NewRemoveBlocksCommandForTest(api removeBlocksAPI, store jujuclient.ClientStore) cmd.Command {
+	c := &removeBlocksCommand{
 		api: api,
-	})
+	}
+	c.SetClientStore(store)
+	return modelcmd.WrapController(c)
 }
 
 // NewDestroyCommandForTest returns a DestroyCommand with the controller and
@@ -118,24 +122,26 @@ func NewKillCommandForTest(
 
 // NewListBlocksCommandForTest returns a ListBlocksCommand with the controller
 // endpoint mocked out.
-func NewListBlocksCommandForTest(api listBlocksAPI, apierr error) cmd.Command {
-	return modelcmd.WrapController(&listBlocksCommand{
+func NewListBlocksCommandForTest(api listBlocksAPI, apierr error, store jujuclient.ClientStore) cmd.Command {
+	c := &listBlocksCommand{
 		api:    api,
 		apierr: apierr,
-	})
+	}
+	c.SetClientStore(store)
+	return modelcmd.WrapController(c)
 }
 
 type CtrData ctrData
-type EnvData envData
+type ModelData modelData
 
 func FmtCtrStatus(data CtrData) string {
 	return fmtCtrStatus(ctrData(data))
 }
 
-func FmtEnvStatus(data EnvData) string {
-	return fmtEnvStatus(envData(data))
+func FmtModelStatus(data ModelData) string {
+	return fmtModelStatus(modelData(data))
 }
 
-func NewData(api destroyControllerAPI, ctrUUID string) (ctrData, []envData, error) {
+func NewData(api destroyControllerAPI, ctrUUID string) (ctrData, []modelData, error) {
 	return newData(api, ctrUUID)
 }

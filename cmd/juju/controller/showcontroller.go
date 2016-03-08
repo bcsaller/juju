@@ -39,7 +39,7 @@ func (c *showControllerCommand) Info() *cmd.Info {
 // SetFlags implements Command.SetFlags.
 func (c *showControllerCommand) SetFlags(f *gnuflag.FlagSet) {
 	c.JujuCommandBase.SetFlags(f)
-	f.BoolVar(&c.includePasswords, "include-passwords", false, "show passwords for displayed accounts")
+	f.BoolVar(&c.showPasswords, "show-passwords", false, "show passwords for displayed accounts")
 	c.out.AddFlags(f, "yaml", map[string]cmd.Formatter{
 		"yaml": cmd.FormatYaml,
 		"json": cmd.FormatJson,
@@ -61,11 +61,15 @@ func (c *showControllerCommand) Run(ctx *cmd.Context) error {
 	}
 	controllers := make(map[string]ShowControllerDetails)
 	for _, name := range controllerNames {
-		one, err := c.store.ControllerByName(name)
+		actualName, err := modelcmd.ResolveControllerName(c.store, name)
 		if err != nil {
-			return errors.Annotatef(err, "failed to get controller %s", name)
+			return err
 		}
-		controllers[name] = c.convertControllerForShow(name, one)
+		one, err := c.store.ControllerByName(actualName)
+		if err != nil {
+			return err
+		}
+		controllers[name] = c.convertControllerForShow(actualName, one)
 	}
 	return c.out.Write(ctx, controllers)
 }
@@ -145,7 +149,7 @@ func (c *showControllerCommand) convertAccountsForShow(controllerName string, co
 		for accountName, account := range accounts {
 			details := &AccountDetails{User: account.User}
 			controller.Accounts[accountName] = details
-			if c.includePasswords {
+			if c.showPasswords {
 				details.Password = account.Password
 			}
 			if err := c.convertModelsForShow(controllerName, accountName, details); err != nil {
@@ -186,8 +190,8 @@ type showControllerCommand struct {
 	out   cmd.Output
 	store jujuclient.ClientStore
 
-	controllerNames  []string
-	includePasswords bool
+	controllerNames []string
+	showPasswords   bool
 }
 
 const showControllerDoc = `
