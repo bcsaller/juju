@@ -6,6 +6,8 @@ package apiserver
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/alecthomas/jsonschema"
 	"github.com/bmizerany/pat"
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
@@ -392,6 +395,7 @@ func (srv *Server) run() {
 			ctxt: strictCtxt,
 		},
 	)
+	handleAll(mux, "/model/:modeluuid/api/schemas", http.HandlerFunc(srv.apiSchemaHandler))
 	handleAll(mux, "/model/:modeluuid/api", http.HandlerFunc(srv.apiHandler))
 
 	handleAll(mux, "/model/:modeluuid/images/:kind/:series/:arch/:filename",
@@ -438,6 +442,25 @@ func (srv *Server) run() {
 	}()
 
 	<-srv.tomb.Dying()
+}
+
+func (srv *Server) apiSchemaHandler(w http.ResponseWriter, req *http.Request) {
+	switch req.Method {
+	case "GET":
+		s := jsonschema.Reflect(srv)
+		b, _ := json.MarshalIndent(s, "", "  ")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprint(len(b)))
+		w.WriteHeader(200)
+		if _, err := w.Write(b); err != nil {
+			sendError(w, errors.NewBadRequest(errors.Annotatef(err, "failed to write schemas"), ""))
+			return
+		}
+		return
+	default:
+		sendError(w, errors.MethodNotAllowedf("unsupported method: %q", req.Method))
+	}
+
 }
 
 func (srv *Server) apiHandler(w http.ResponseWriter, req *http.Request) {
