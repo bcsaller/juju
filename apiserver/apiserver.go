@@ -15,7 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/alecthomas/jsonschema"
 	"github.com/bmizerany/pat"
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
@@ -473,7 +472,8 @@ func (srv *Server) run() {
 func (srv *Server) apiSchemaHandler(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case "GET":
-		s := jsonschema.Reflect(srv)
+		s := DescribeFacadeSchemas()
+		logger.Debugf("%v\n", s)
 		b, _ := json.MarshalIndent(s, "", "  ")
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Length", fmt.Sprint(len(b)))

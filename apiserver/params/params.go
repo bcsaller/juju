@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alecthomas/jsonschema"
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
 	"github.com/juju/replicaset"
@@ -567,6 +568,13 @@ type DistributionGroupResults struct {
 type FacadeVersions struct {
 	Name     string
 	Versions []int
+}
+
+// FacadeSchema describe the jsonschema of the RPC interface for a Facacde
+type FacadeSchema struct {
+	Name    string
+	Version int
+	Schema  *jsonschema.Schema
 }
 
 // LoginResult holds the result of a Login call.
