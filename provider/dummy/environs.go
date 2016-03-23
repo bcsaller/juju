@@ -53,6 +53,7 @@ import (
 	"github.com/juju/juju/provider/common"
 	"github.com/juju/juju/state"
 	"github.com/juju/juju/state/multiwatcher"
+	"github.com/juju/juju/status"
 	"github.com/juju/juju/storage"
 	"github.com/juju/juju/testing"
 	coretools "github.com/juju/juju/tools"
@@ -857,7 +858,7 @@ func (e *environ) Destroy() (res error) {
 // ConstraintsValidator is defined on the Environs interface.
 func (e *environ) ConstraintsValidator() (constraints.Validator, error) {
 	validator := constraints.NewValidator()
-	validator.RegisterUnsupported([]string{constraints.CpuPower})
+	validator.RegisterUnsupported([]string{constraints.CpuPower, constraints.VirtType})
 	validator.RegisterConflicts([]string{constraints.InstanceType}, []string{constraints.Mem})
 	return validator, nil
 }
@@ -1085,7 +1086,8 @@ func (env *environ) Spaces() ([]network.SpaceInfo, error) {
 		return []network.SpaceInfo{}, err
 	}
 	return []network.SpaceInfo{{
-		ProviderId: network.Id("foo"),
+		Name:       "foo",
+		ProviderId: network.Id("0"),
 		Subnets: []network.SubnetInfo{{
 			ProviderId:        network.Id("1"),
 			AvailabilityZones: []string{"zone1"},
@@ -1093,17 +1095,20 @@ func (env *environ) Spaces() ([]network.SpaceInfo, error) {
 			ProviderId:        network.Id("2"),
 			AvailabilityZones: []string{"zone1"},
 		}}}, {
-		ProviderId: network.Id("Another Foo 99!"),
+		Name:       "Another Foo 99!",
+		ProviderId: "1",
 		Subnets: []network.SubnetInfo{{
 			ProviderId:        network.Id("3"),
 			AvailabilityZones: []string{"zone1"},
 		}}}, {
-		ProviderId: network.Id("foo-"),
+		Name:       "foo-",
+		ProviderId: "2",
 		Subnets: []network.SubnetInfo{{
 			ProviderId:        network.Id("4"),
 			AvailabilityZones: []string{"zone1"},
 		}}}, {
-		ProviderId: network.Id("---"),
+		Name:       "---",
+		ProviderId: "3",
 		Subnets: []network.SubnetInfo{{
 			ProviderId:        network.Id("5"),
 			AvailabilityZones: []string{"zone1"},
@@ -1525,10 +1530,23 @@ func (inst *dummyInstance) Id() instance.Id {
 	return inst.id
 }
 
-func (inst *dummyInstance) Status() string {
+func (inst *dummyInstance) Status() instance.InstanceStatus {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
-	return inst.status
+	// TODO(perrito666) add a provider status -> juju status mapping.
+	jujuStatus := status.StatusPending
+	if inst.status != "" {
+		dummyStatus := status.Status(inst.status)
+		if dummyStatus.KnownInstanceStatus() {
+			jujuStatus = dummyStatus
+		}
+	}
+
+	return instance.InstanceStatus{
+		Status:  jujuStatus,
+		Message: inst.status,
+	}
+
 }
 
 // SetInstanceAddresses sets the addresses associated with the given
@@ -1661,5 +1679,13 @@ func delay() {
 	if providerDelay > 0 {
 		logger.Infof("pausing for %v", providerDelay)
 		<-time.After(providerDelay)
+	}
+}
+
+// MigrationConfigUpdate implements MigrationConfigUpdater.
+func (*environ) MigrationConfigUpdate(controllerConfig *config.Config) map[string]interface{} {
+	uuid, _ := controllerConfig.UUID()
+	return map[string]interface{}{
+		"controller-uuid": uuid,
 	}
 }

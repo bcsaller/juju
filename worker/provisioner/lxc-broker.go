@@ -18,6 +18,7 @@ import (
 	"github.com/juju/utils/arch"
 	"github.com/juju/utils/exec"
 	"github.com/juju/utils/set"
+	"github.com/juju/version"
 
 	"github.com/juju/juju/agent"
 	apiprovisioner "github.com/juju/juju/api/provisioner"
@@ -28,9 +29,7 @@ import (
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/instance"
 	"github.com/juju/juju/network"
-	"github.com/juju/juju/storage/looputil"
 	"github.com/juju/juju/tools"
-	"github.com/juju/juju/version"
 )
 
 var lxcLogger = loggo.GetLogger("juju.provisioner.lxc")
@@ -49,8 +48,7 @@ var _ APICalls = (*apiprovisioner.State)(nil)
 // Override for testing.
 var NewLxcBroker = newLxcBroker
 
-func newLxcBroker(
-	api APICalls,
+func newLxcBroker(api APICalls,
 	agentConfig agent.Config,
 	managerConfig container.ManagerConfig,
 	imageURLGetter container.ImageURLGetter,
@@ -58,11 +56,9 @@ func newLxcBroker(
 	defaultMTU int,
 ) (environs.InstanceBroker, error) {
 	namespace := maybeGetManagerConfigNamespaces(managerConfig)
-	manager, err := lxc.NewContainerManager(
-		managerConfig, imageURLGetter, looputil.NewLoopDeviceManager(),
-	)
+	manager, err := lxc.NewContainerManager(managerConfig, imageURLGetter)
 	if err != nil {
-		return nil, err
+		return nil, errors.Trace(err)
 	}
 	return &lxcBroker{
 		manager:     manager,
@@ -162,7 +158,7 @@ func (broker *lxcBroker) StartInstance(args environs.StartInstanceParams) (*envi
 		return nil, err
 	}
 
-	inst, hardware, err := broker.manager.CreateContainer(args.InstanceConfig, series, network, storageConfig)
+	inst, hardware, err := broker.manager.CreateContainer(args.InstanceConfig, series, network, storageConfig, args.StatusCallback)
 	if err != nil {
 		lxcLogger.Errorf("failed to start container: %v", err)
 		return nil, err

@@ -19,6 +19,7 @@ import (
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/arch"
 	"github.com/juju/utils/set"
+	"github.com/juju/version"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/agent"
@@ -39,11 +40,12 @@ import (
 	jujutesting "github.com/juju/juju/juju/testing"
 	"github.com/juju/juju/network"
 	"github.com/juju/juju/state"
+	"github.com/juju/juju/status"
 	"github.com/juju/juju/storage"
 	"github.com/juju/juju/storage/provider"
 	coretesting "github.com/juju/juju/testing"
 	coretools "github.com/juju/juju/tools"
-	"github.com/juju/juju/version"
+	jujuversion "github.com/juju/juju/version"
 	"github.com/juju/juju/worker/provisioner"
 )
 
@@ -94,7 +96,7 @@ func (s *lxcBrokerSuite) SetUpTest(c *gc.C) {
 		agent.AgentConfigParams{
 			Paths:             agent.NewPathsWithDefaults(agent.Paths{DataDir: "/not/used/here"}),
 			Tag:               names.NewMachineTag("1"),
-			UpgradedToVersion: version.Current,
+			UpgradedToVersion: jujuversion.Current,
 			Password:          "dummy-secret",
 			Nonce:             "nonce",
 			APIAddresses:      []string{"10.0.0.1:1234"},
@@ -132,11 +134,15 @@ func (s *lxcBrokerSuite) startInstance(c *gc.C, machineId string, volumes []stor
 		Version: version.MustParseBinary("2.3.4-quantal-amd64"),
 		URL:     "http://tools.testing.invalid/2.3.4-quantal-amd64.tgz",
 	}}
+	callback := func(settableStatus status.Status, info string, data map[string]interface{}) error {
+		return nil
+	}
 	result, err := s.broker.StartInstance(environs.StartInstanceParams{
 		Constraints:    cons,
 		Tools:          possibleTools,
 		InstanceConfig: instanceConfig,
 		Volumes:        volumes,
+		StatusCallback: callback,
 	})
 	c.Assert(err, jc.ErrorIsNil)
 	return result.Instance
@@ -149,11 +155,15 @@ func (s *lxcBrokerSuite) maintainInstance(c *gc.C, machineId string, volumes []s
 		Version: version.MustParseBinary("2.3.4-quantal-amd64"),
 		URL:     "http://tools.testing.invalid/2.3.4-quantal-amd64.tgz",
 	}}
+	callback := func(settableStatus status.Status, info string, data map[string]interface{}) error {
+		return nil
+	}
 	err := s.broker.MaintainInstance(environs.StartInstanceParams{
 		Constraints:    cons,
 		Tools:          possibleTools,
 		InstanceConfig: instanceConfig,
 		Volumes:        volumes,
+		StatusCallback: callback,
 	})
 	c.Assert(err, jc.ErrorIsNil)
 }
@@ -286,10 +296,15 @@ func (s *lxcBrokerSuite) TestStartInstanceHostArch(c *gc.C) {
 		Version: version.MustParseBinary("2.3.4-quantal-ppc64el"),
 		URL:     "http://tools.testing.invalid/2.3.4-quantal-ppc64el.tgz",
 	}}
+	callback := func(settableStatus status.Status, info string, data map[string]interface{}) error {
+		return nil
+	}
+
 	_, err := s.broker.StartInstance(environs.StartInstanceParams{
 		Constraints:    constraints.Value{},
 		Tools:          possibleTools,
 		InstanceConfig: instanceConfig,
+		StatusCallback: callback,
 	})
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(instanceConfig.Tools.Version.Arch, gc.Equals, arch.PPC64EL)
@@ -304,10 +319,15 @@ func (s *lxcBrokerSuite) TestStartInstanceToolsArchNotFound(c *gc.C) {
 		Version: version.MustParseBinary("2.3.4-quantal-amd64"),
 		URL:     "http://tools.testing.invalid/2.3.4-quantal-amd64.tgz",
 	}}
+	callback := func(settableStatus status.Status, info string, data map[string]interface{}) error {
+		return nil
+	}
+
 	_, err := s.broker.StartInstance(environs.StartInstanceParams{
 		Constraints:    constraints.Value{},
 		Tools:          possibleTools,
 		InstanceConfig: instanceConfig,
+		StatusCallback: callback,
 	})
 	c.Assert(err, gc.ErrorMatches, "need tools for arch ppc64el, only found \\[amd64\\]")
 }
@@ -348,10 +368,15 @@ func (s *lxcBrokerSuite) startInstancePopulatesNetworkInfo(c *gc.C) (*environs.S
 		Version: version.MustParseBinary("2.3.4-quantal-amd64"),
 		URL:     "http://tools.testing.invalid/2.3.4-quantal-amd64.tgz",
 	}}
+	callback := func(settableStatus status.Status, info string, data map[string]interface{}) error {
+		return nil
+	}
+
 	return s.broker.StartInstance(environs.StartInstanceParams{
 		Constraints:    constraints.Value{},
 		Tools:          possibleTools,
 		InstanceConfig: instanceConfig,
+		StatusCallback: callback,
 	})
 }
 
@@ -1223,7 +1248,7 @@ func (s *lxcProvisionerSuite) maybeUploadTools(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 
 	defaultTools := version.Binary{
-		Number: version.Current,
+		Number: jujuversion.Current,
 		Arch:   arch.HostArch(),
 		Series: coretesting.FakeDefaultSeries,
 	}

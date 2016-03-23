@@ -25,7 +25,6 @@ import (
 
 	"github.com/juju/juju/apiserver/common"
 	"github.com/juju/juju/apiserver/params"
-	resourceapi "github.com/juju/juju/resource/api"
 	"github.com/juju/juju/rpc"
 	"github.com/juju/juju/rpc/jsoncodec"
 	"github.com/juju/juju/state"
@@ -385,7 +384,7 @@ func (srv *Server) run() {
 	logSinkHandler := srv.trackRequests(newLogSinkHandler(httpCtxt, srv.logDir))
 	debugLogHandler := srv.trackRequests(newDebugLogDBHandler(httpCtxt))
 
-	handleAll(mux, "/model/:modeluuid"+resourceapi.HTTPEndpointPattern,
+	handleAll(mux, "/model/:modeluuid/services/:service/resources/:resource",
 		newResourceHandler(httpCtxt),
 	)
 	handleAll(mux, "/model/:modeluuid/units/:unit/resources/:resource",
@@ -430,6 +429,9 @@ func (srv *Server) run() {
 			state:   srv.state,
 		},
 	)
+
+	handleGUI(mux, "/gui/:modeluuid/", srv.dataDir, httpCtxt)
+
 	// For backwards compatibility we register all the old paths
 	handleAll(mux, "/log", debugLogHandler)
 
