@@ -605,13 +605,13 @@ func (st *State) UpdateModelConfig(updateAttrs map[string]interface{}, removeAtt
 	return errors.Trace(err)
 }
 
-// EnvironConstraints returns the current model constraints.
+// ModelConstraints returns the current model constraints.
 func (st *State) ModelConstraints() (constraints.Value, error) {
 	cons, err := readConstraints(st, modelGlobalKey)
 	return cons, errors.Trace(err)
 }
 
-// SetEnvironConstraints replaces the current model constraints.
+// SetModelConstraints replaces the current model constraints.
 func (st *State) SetModelConstraints(cons constraints.Value) error {
 	unsupported, err := st.validateConstraints(cons)
 	if len(unsupported) > 0 {
@@ -1331,7 +1331,8 @@ func (st *State) AddService(args AddServiceArgs) (service *Service, err error) {
 		// behaviour.
 		Status:     status.StatusUnknown,
 		StatusInfo: MessageWaitForAgentInit,
-		Updated:    time.Now().UnixNano(),
+		// TODO(fwereade): 2016-03-17 lp:1558657
+		Updated: time.Now().UnixNano(),
 		// This exists to preserve questionable unit-aggregation behaviour
 		// while we work out how to switch to an implementation that makes
 		// sense. It is also set in AddMissingServiceStatuses.

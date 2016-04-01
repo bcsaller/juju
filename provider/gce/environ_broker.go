@@ -36,13 +36,7 @@ func (*environ) MaintainInstance(args environs.StartInstanceParams) error {
 
 // StartInstance implements environs.InstanceBroker.
 func (env *environ) StartInstance(args environs.StartInstanceParams) (*environs.StartInstanceResult, error) {
-	// Please note that in order to fulfil the demands made of Instances and
-	// AllInstances, it is imperative that some environment feature be used to
-	// keep track of which instances were actually started by juju.
-	env = env.getSnapshot()
-
 	// Start a new instance.
-
 	if args.InstanceConfig.HasNetworks() {
 		return nil, errors.New("starting instances with networks is not supported yet")
 	}
@@ -152,7 +146,7 @@ func (env *environ) findInstanceSpec(
 // provisioned, relative to the provided args and spec. Info for that
 // low-level instance is returned.
 func (env *environ) newRawInstance(args environs.StartInstanceParams, spec *instances.InstanceSpec) (*google.Instance, error) {
-	machineID := common.MachineFullName(env, args.InstanceConfig.MachineId)
+	machineID := common.MachineFullName(env.Config().UUID(), args.InstanceConfig.MachineId)
 
 	os, err := series.GetOSFromSeries(args.InstanceConfig.Series)
 	if err != nil {
@@ -168,13 +162,9 @@ func (env *environ) newRawInstance(args environs.StartInstanceParams, spec *inst
 		machineID,
 	}
 
-	cfg := env.Config()
-	eUUID, ok := cfg.UUID()
-	if !ok {
-		return nil, errors.NotFoundf("UUID necessary to create the instance disk")
-	}
-
-	disks, err := getDisks(spec, args.Constraints, args.InstanceConfig.Series, eUUID)
+	disks, err := getDisks(
+		spec, args.Constraints, args.InstanceConfig.Series, env.Config().UUID(),
+	)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -310,14 +300,12 @@ func (env *environ) AllInstances() ([]instance.Instance, error) {
 
 // StopInstances implements environs.InstanceBroker.
 func (env *environ) StopInstances(instances ...instance.Id) error {
-	env = env.getSnapshot()
-
 	var ids []string
 	for _, id := range instances {
 		ids = append(ids, string(id))
 	}
 
-	prefix := common.MachineFullName(env, "")
+	prefix := common.MachineFullName(env.Config().UUID(), "")
 	err := env.gce.RemoveInstances(prefix, ids...)
 	return errors.Trace(err)
 }

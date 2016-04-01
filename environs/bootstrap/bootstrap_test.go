@@ -111,15 +111,33 @@ func (s *bootstrapSuite) TestBootstrapSpecifiedConstraints(c *gc.C) {
 	env := newEnviron("foo", useDefaultKeys, nil)
 	s.setDummyStorage(c, env)
 	bootstrapCons := constraints.MustParse("cpu-cores=3 mem=7G")
-	environCons := constraints.MustParse("cpu-cores=2 mem=4G")
+	modelCons := constraints.MustParse("cpu-cores=2 mem=4G")
 	err := bootstrap.Bootstrap(envtesting.BootstrapContext(c), env, bootstrap.BootstrapParams{
 		BootstrapConstraints: bootstrapCons,
-		EnvironConstraints:   environCons,
+		ModelConstraints:     modelCons,
 	})
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(env.bootstrapCount, gc.Equals, 1)
 	c.Assert(env.args.BootstrapConstraints, gc.DeepEquals, bootstrapCons)
-	c.Assert(env.args.EnvironConstraints, gc.DeepEquals, environCons)
+	c.Assert(env.args.ModelConstraints, gc.DeepEquals, modelCons)
+}
+
+func (s *bootstrapSuite) TestBootstrapSpecifiedBootstrapSeries(c *gc.C) {
+	env := newEnviron("foo", useDefaultKeys, nil)
+	s.setDummyStorage(c, env)
+	cfg, err := env.Config().Apply(map[string]interface{}{
+		"default-series": "wily",
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	env.cfg = cfg
+
+	err = bootstrap.Bootstrap(envtesting.BootstrapContext(c), env, bootstrap.BootstrapParams{
+		BootstrapSeries: "trusty",
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	c.Check(env.bootstrapCount, gc.Equals, 1)
+	c.Check(env.args.BootstrapSeries, gc.Equals, "trusty")
+	c.Check(env.args.AvailableTools.AllSeries(), jc.SameContents, []string{"trusty"})
 }
 
 func (s *bootstrapSuite) TestBootstrapSpecifiedPlacement(c *gc.C) {
@@ -565,7 +583,11 @@ func (e *bootstrapEnviron) Bootstrap(ctx environs.BootstrapContext, args environ
 		e.instanceConfig = icfg
 		return nil
 	}
-	return &environs.BootstrapResult{Arch: arch.HostArch(), Series: series.HostSeries(), Finalize: finalizer}, nil
+	series := series.HostSeries()
+	if args.BootstrapSeries != "" {
+		series = args.BootstrapSeries
+	}
+	return &environs.BootstrapResult{Arch: arch.HostArch(), Series: series, Finalize: finalizer}, nil
 }
 
 func (e *bootstrapEnviron) Config() *config.Config {
