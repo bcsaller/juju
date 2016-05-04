@@ -48,7 +48,6 @@ type Server struct {
 	limiter           utils.Limiter
 	validator         LoginValidator
 	adminApiFactories map[int]adminApiFactory
-	mongoUnavailable  uint32 // non zero if mongoUnavailable
 	modelUUID         string
 	authCtxt          *authContext
 	connections       int32 // count of active websocket connections
@@ -68,6 +67,9 @@ type ServerConfig struct {
 	LogDir      string
 	Validator   LoginValidator
 	CertChanged chan params.StateServingInfo
+
+	// This field only exists to support testing.
+	StatePool *state.StatePool
 }
 
 // changeCertListener wraps a TLS net.Listener.
@@ -185,13 +187,17 @@ func newServer(s *state.State, lis *net.TCPListener, cfg ServerConfig) (_ *Serve
 	}
 	// TODO(rog) check that *srvRoot is a valid type for using
 	// as an RPC server.
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{tlsCert},
-		MinVersion:   tls.VersionTLS10,
+	tlsConfig := utils.SecureTLSConfig()
+	tlsConfig.Certificates = []tls.Certificate{tlsCert}
+
+	stPool := cfg.StatePool
+	if stPool == nil {
+		stPool = state.NewStatePool(s)
 	}
+
 	srv := &Server{
 		state:     s,
-		statePool: state.NewStatePool(s),
+		statePool: stPool,
 		lis:       newChangeCertListener(lis, cfg.CertChanged, tlsConfig),
 		tag:       cfg.Tag,
 		dataDir:   cfg.DataDir,
@@ -330,14 +336,8 @@ func (srv *Server) run() {
 
 	srv.wg.Add(1)
 	go func() {
-		err := srv.mongoPinger()
-		// Before killing the tomb, inform the API handlers that
-		// Mongo is unavailable. API handlers can use this to decide
-		// not to perform non-critical Mongo-related operations when
-		// tearing down.
-		atomic.AddUint32(&srv.mongoUnavailable, 1)
-		srv.tomb.Kill(err)
-		srv.wg.Done()
+		defer srv.wg.Done()
+		srv.tomb.Kill(srv.mongoPinger())
 	}()
 
 	// for pat based handlers, they are matched in-order of being
@@ -452,7 +452,8 @@ func (srv *Server) endpoints() []apihttp.Endpoint {
 	)
 	add("/register",
 		&registerUserHandler{
-			ctxt: httpCtxt,
+			httpCtxt,
+			srv.authCtxt.userAuth.CreateLocalLoginMacaroon,
 		},
 	)
 	add("/", mainAPIHandler)

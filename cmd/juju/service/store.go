@@ -12,6 +12,7 @@ import (
 	"gopkg.in/juju/charm.v6-unstable"
 	"gopkg.in/juju/charmrepo.v2-unstable"
 	"gopkg.in/juju/charmrepo.v2-unstable/csclient"
+	csparams "gopkg.in/juju/charmrepo.v2-unstable/csclient/params"
 	"gopkg.in/macaroon-bakery.v1/httpbakery"
 	"gopkg.in/macaroon.v1"
 
@@ -57,112 +58,68 @@ func isSeriesSupported(requestedSeries string, supportedSeries []string) bool {
 // charmURLResolver holds the information necessary to
 // resolve charm and bundle URLs.
 type charmURLResolver struct {
-	// csRepo holds the repository to use for charmstore charms.
-	csRepo charmrepo.Interface
-
-	// repoPath holds the path to the local charm repository directory.
-	repoPath string
+	// store holds the repository to use for charmstore charms.
+	store *charmrepo.CharmStore
 
 	// conf holds the current model configuration.
 	conf *config.Config
 }
 
-func newCharmURLResolver(conf *config.Config, csClient *csclient.Client, repoPath string) *charmURLResolver {
+func newCharmURLResolver(conf *config.Config, csClient *csclient.Client) *charmURLResolver {
 	r := &charmURLResolver{
-		csRepo:   charmrepo.NewCharmStoreFromClient(csClient),
-		repoPath: repoPath,
-		conf:     conf,
+		store: charmrepo.NewCharmStoreFromClient(csClient),
+		conf:  conf,
 	}
 	return r
 }
 
+// TODO(ericsnow) Return charmstore.CharmID from resolve()?
+
 // resolve resolves the given given charm or bundle URL
-// string by looking it up in the appropriate charm repository. If it is
-// a charm store URL, the given csParams will be used to access the
-// charm store repository. If it is a local charm or bundle URL, the
-// local charm repository at the given repoPath will be used. The given
-// configuration will be used to add any necessary attributes to the
-// repo and to return the charm's supported series if possible.
+// string by looking it up in the charm store.
+// The given csParams will be used to access the charm store.
 //
 // It returns the fully resolved URL, any series supported by the entity,
-// and the repository that holds it.
-func (r *charmURLResolver) resolve(urlStr string) (*charm.URL, []string, charmrepo.Interface, error) {
+// and the store that holds it.
+func (r *charmURLResolver) resolve(urlStr string) (*charm.URL, csparams.Channel, []string, *charmrepo.CharmStore, error) {
+	var noChannel csparams.Channel
 	url, err := charm.ParseURL(urlStr)
 	if err != nil {
-		return nil, nil, nil, errors.Trace(err)
+		return nil, noChannel, nil, nil, errors.Trace(err)
 	}
-	var repo charmrepo.Interface
-	switch url.Schema {
-	case "cs":
-		repo = r.csRepo
-	case "local":
-		if url.Series == "" {
-			if defaultSeries, ok := r.conf.DefaultSeries(); ok {
-				url.Series = defaultSeries
-			}
-		}
-		if url.Series == "" {
-			possibleURL := *url
-			possibleURL.Series = config.LatestLtsSeries()
-			logger.Errorf("The series is not specified in the model (default-series) or with the charm. Did you mean:\n\t%s", &possibleURL)
-			return nil, nil, nil, errors.Errorf("cannot resolve series for charm: %q", url)
-		}
-		repo, err = charmrepo.NewLocalRepository(r.repoPath)
-		if err != nil {
-			return nil, nil, nil, errors.Mask(err)
-		}
-	default:
-		return nil, nil, nil, errors.Errorf("unknown schema for charm reference %q", urlStr)
+
+	if url.Schema != "cs" {
+		return nil, noChannel, nil, nil, errors.Errorf("unknown schema for charm URL %q", url)
 	}
-	repo = config.SpecializeCharmRepo(repo, r.conf)
-	resultUrl, supportedSeries, err := repo.Resolve(url)
+	charmStore := config.SpecializeCharmRepo(r.store, r.conf).(*charmrepo.CharmStore)
+
+	resultUrl, channel, supportedSeries, err := charmStore.ResolveWithChannel(url)
 	if err != nil {
-		return nil, nil, nil, errors.Trace(err)
+		return nil, noChannel, nil, nil, errors.Trace(err)
 	}
-	return resultUrl, supportedSeries, repo, nil
+	return resultUrl, channel, supportedSeries, charmStore, nil
 }
+
+// TODO(ericsnow) Return charmstore.CharmID from addCharmFromURL()?
 
 // addCharmFromURL calls the appropriate client API calls to add the
 // given charm URL to state. For non-public charm URLs, this function also
 // handles the macaroon authorization process using the given csClient.
 // The resulting charm URL of the added charm is displayed on stdout.
-//
-// The repo holds the charm repository associated with with the URL
-// by resolveCharmStoreEntityURL.
-func addCharmFromURL(client *api.Client, curl *charm.URL, repo charmrepo.Interface) (*charm.URL, *macaroon.Macaroon, error) {
+func addCharmFromURL(client *api.Client, curl *charm.URL, channel csparams.Channel, csClient *csclient.Client) (*charm.URL, *macaroon.Macaroon, error) {
 	var csMac *macaroon.Macaroon
-	switch curl.Schema {
-	case "local":
-		ch, err := repo.Get(curl)
+	if err := client.AddCharm(curl, channel); err != nil {
+		if !params.IsCodeUnauthorized(err) {
+			return nil, nil, errors.Trace(err)
+		}
+		m, err := authorizeCharmStoreEntity(csClient, curl)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, maybeTermsAgreementError(err)
 		}
-		stateCurl, err := client.AddLocalCharm(curl, ch)
-		if err != nil {
-			return nil, nil, err
+		if err := client.AddCharmWithAuthorization(curl, channel, m); err != nil {
+			return nil, nil, errors.Trace(err)
 		}
-		curl = stateCurl
-	case "cs":
-		repo, ok := repo.(*charmrepo.CharmStore)
-		if !ok {
-			return nil, nil, errors.Errorf("(cannot happen) cs-schema URL with unexpected repo type %T", repo)
-		}
-		csClient := repo.Client()
-		if err := client.AddCharm(curl); err != nil {
-			if !params.IsCodeUnauthorized(err) {
-				return nil, nil, errors.Trace(err)
-			}
-			m, err := authorizeCharmStoreEntity(csClient, curl)
-			if err != nil {
-				return nil, nil, maybeTermsAgreementError(err)
-			}
-			if err := client.AddCharmWithAuthorization(curl, m); err != nil {
-				return nil, nil, errors.Trace(err)
-			}
-			csMac = m
-		}
-	default:
-		return nil, nil, fmt.Errorf("unsupported charm URL schema: %q", curl.Schema)
+		csMac = m
 	}
 	return curl, csMac, nil
 }
@@ -174,6 +131,9 @@ var newCharmStoreClient = func(client *httpbakery.Client) *csclient.Client {
 		BakeryClient: client,
 	})
 }
+
+// TODO(natefinch): change the code in this file to use the
+// github.com/juju/juju/charmstore package to interact with the charmstore.
 
 // authorizeCharmStoreEntity acquires and return the charm store delegatable macaroon to be
 // used to add the charm corresponding to the given URL.

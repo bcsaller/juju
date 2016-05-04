@@ -8,12 +8,17 @@ import (
 
 	"github.com/juju/juju/apiserver/common"
 	"github.com/juju/juju/apiserver/params"
-	"github.com/juju/juju/state"
 )
 
 // DestroyController will attempt to destroy the controller. If the args
 // specify the removal of blocks or the destruction of the models, this
 // method will attempt to do so.
+//
+// If the controller has any non-Dead hosted models, then an error with
+// the code params.CodeHasHostedModels will be transmitted, regardless of
+// the value of the DestroyModels parameter. This is to inform the client
+// that it should wait for hosted models to be completely cleaned up
+// before proceeding.
 func (s *ControllerAPI) DestroyController(args params.DestroyControllerArgs) error {
 	controllerEnv, err := s.state.ControllerModel()
 	if err != nil {
@@ -32,10 +37,10 @@ func (s *ControllerAPI) DestroyController(args params.DestroyControllerArgs) err
 	if args.DestroyModels {
 		return errors.Trace(common.DestroyModelIncludingHosted(s.state, systemTag))
 	}
-	if err = common.DestroyModel(s.state, systemTag); state.IsHasHostedModelsError(err) {
-		err = errors.New("controller model cannot be destroyed before all other models are destroyed")
+	if err := common.DestroyModel(s.state, systemTag); err != nil {
+		return errors.Trace(err)
 	}
-	return errors.Trace(err)
+	return nil
 }
 
 func (s *ControllerAPI) ensureNotBlocked(args params.DestroyControllerArgs) error {

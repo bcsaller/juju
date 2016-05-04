@@ -74,14 +74,18 @@ func (s *MigrationSuite) TestKnownCollections(c *gc.C) {
 		// Not exported, but the tools will possibly need to be either bundled
 		// with the representation or sent separately.
 		toolsmetadataC,
+		// Bakery storage items are non-critical. We store root keys for
+		// temporary credentials in there; after migration you'll just have
+		// to log back in.
+		bakeryStorageItemsC,
 		// Transaction stuff.
 		"txns",
 		"txns.log",
 
 		// We don't import any of the migration collections.
-		modelMigrationsC,
-		modelMigrationStatusC,
-		modelMigrationsActiveC,
+		migrationsC,
+		migrationsStatusC,
+		migrationsActiveC,
 
 		// The container ref document is primarily there to keep track
 		// of a particular machine's containers. The migration format
@@ -96,9 +100,18 @@ func (s *MigrationSuite) TestKnownCollections(c *gc.C) {
 		// to machines.
 		assignUnitC,
 
+		// The model entity references collection will be repopulated
+		// after importing the model. It does not need to be migrated
+		// separately.
+		modelEntityRefsC,
+
 		// This has been deprecated in 2.0, and should not contain any data
 		// we actually care about migrating.
 		legacyipaddressesC,
+
+		// The SSH host keys for each machine will be reported as each
+		// machine agent starts up.
+		sshHostKeysC,
 	)
 
 	// THIS SET WILL BE REMOVED WHEN MIGRATIONS ARE COMPLETE
@@ -129,9 +142,6 @@ func (s *MigrationSuite) TestKnownCollections(c *gc.C) {
 		ipAddressesC,
 		linkLayerDevicesC,
 		linkLayerDevicesRefsC,
-		networksC,
-		networkInterfacesC,
-		requestedNetworksC,
 		subnetsC,
 		spacesC,
 
@@ -161,20 +171,18 @@ func (s *MigrationSuite) TestKnownCollections(c *gc.C) {
 
 func (s *MigrationSuite) TestModelDocFields(c *gc.C) {
 	fields := set.NewStrings(
-		// UUID and Mame are constructed from the model config.
+		// UUID and Name are constructed from the model config.
 		"UUID",
 		"Name",
 		// Life will always be alive, or we won't be migrating.
 		"Life",
-		"Owner",
-		"LatestAvailableTools",
 		// ServerUUID is recreated when the new model is created in the
 		// new controller (yay name changes).
 		"ServerUUID",
-		// Both of the times for dying and death are empty as the model
-		// is alive.
-		"TimeOfDying",
-		"TimeOfDeath",
+
+		"MigrationMode",
+		"Owner",
+		"LatestAvailableTools",
 	)
 	s.AssertExportedFields(c, modelDoc{}, fields)
 }
@@ -231,6 +239,7 @@ func (s *MigrationSuite) TestMachineDocFields(c *gc.C) {
 		"Placement",
 		"PreferredPrivateAddress",
 		"PreferredPublicAddress",
+		"Principals",
 		"Series",
 		"SupportedContainers",
 		"SupportedContainersKnown",
@@ -241,7 +250,6 @@ func (s *MigrationSuite) TestMachineDocFields(c *gc.C) {
 		"StopMongoUntilVersion",
 	)
 	todo := set.NewStrings(
-		"Principals",
 		"Volumes",
 		"NoVote",
 		"Clean",
@@ -297,6 +305,7 @@ func (s *MigrationSuite) TestServiceDocFields(c *gc.C) {
 		"Series",
 		"Subordinate",
 		"CharmURL",
+		"Channel",
 		"CharmModifiedVersion",
 		"ForceCharm",
 		"Exposed",
@@ -327,7 +336,7 @@ func (s *MigrationSuite) TestUnitDocFields(c *gc.C) {
 		"ModelUUID",
 		// Service is implicit in the migration structure through containment.
 		"Service",
-		// Series and CharmURL also come from the service.
+		// Series, CharmURL, and Channel also come from the service.
 		"Series",
 		"CharmURL",
 		"Principal",
@@ -360,9 +369,9 @@ func (s *MigrationSuite) TestPortsDocFields(c *gc.C) {
 		// ModelUUID shouldn't be exported, and is inherited
 		// from the model definition.
 		"ModelUUID",
-		// MachineId is implicit in the migration structure through containment.
+		// MachineID is implicit in the migration structure through containment.
 		"MachineID",
-		"NetworkName",
+		"SubnetID",
 		"Ports",
 		// TxnRevno isn't migrated.
 		"TxnRevno",
@@ -486,8 +495,6 @@ func (s *MigrationSuite) TestConstraintsDocFields(c *gc.C) {
 		"Container",
 		"Tags",
 		"Spaces",
-		// Networks is a deprecated constraint and not exported.
-		"Networks",
 	)
 	s.AssertExportedFields(c, constraintsDoc{}, fields)
 }

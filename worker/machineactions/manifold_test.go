@@ -17,35 +17,31 @@ import (
 	"github.com/juju/juju/worker/dependency"
 	dt "github.com/juju/juju/worker/dependency/testing"
 	"github.com/juju/juju/worker/machineactions"
-	"github.com/juju/juju/worker/util"
 )
 
 type ManifoldSuite struct {
 	testing.IsolationSuite
-	stubAgentApiManifoldConfig util.AgentApiManifoldConfig
-	getResource                dependency.GetResourceFunc
-	fakeAgent                  agent.Agent
-	fakeCaller                 base.APICaller
-	fakeFacade                 machineactions.Facade
-	fakeWorker                 worker.Worker
-	newFacade                  func(machineactions.Facade) func(base.APICaller) machineactions.Facade
-	newWorker                  func(worker.Worker, error) func(machineactions.WorkerConfig) (worker.Worker, error)
+	context    dependency.Context
+	fakeAgent  agent.Agent
+	fakeCaller base.APICaller
+	fakeFacade machineactions.Facade
+	fakeWorker worker.Worker
+	newFacade  func(machineactions.Facade) func(base.APICaller) machineactions.Facade
+	newWorker  func(worker.Worker, error) func(machineactions.WorkerConfig) (worker.Worker, error)
 }
 
 var _ = gc.Suite(&ManifoldSuite{})
 
 func (s *ManifoldSuite) SetUpSuite(c *gc.C) {
 	s.IsolationSuite.SetUpSuite(c)
-	s.stubAgentApiManifoldConfig = util.AgentApiManifoldConfig{
-		AgentName:     "wut",
-		APICallerName: "exactly",
-	}
 	s.fakeAgent = &fakeAgent{tag: fakeTag}
 	s.fakeCaller = &fakeCaller{}
-	s.getResource = dt.StubGetResource(dt.StubResources{
-		"wut":     dt.StubResource{Output: s.fakeAgent},
-		"exactly": dt.StubResource{Output: s.fakeCaller},
+
+	s.context = dt.StubContext(nil, map[string]interface{}{
+		"wut":     s.fakeAgent,
+		"exactly": s.fakeCaller,
 	})
+
 	s.newFacade = func(facade machineactions.Facade) func(base.APICaller) machineactions.Facade {
 		s.fakeFacade = facade
 		return func(apiCaller base.APICaller) machineactions.Facade {
@@ -66,46 +62,50 @@ func (s *ManifoldSuite) SetUpSuite(c *gc.C) {
 
 func (s *ManifoldSuite) TestInputs(c *gc.C) {
 	manifold := machineactions.Manifold(machineactions.ManifoldConfig{
-		AgentApiManifoldConfig: s.stubAgentApiManifoldConfig,
+		AgentName:     "wut",
+		APICallerName: "exactly",
 	})
 	c.Check(manifold.Inputs, jc.DeepEquals, []string{"wut", "exactly"})
 }
 
 func (s *ManifoldSuite) TestStartMissingAgent(c *gc.C) {
 	manifold := machineactions.Manifold(machineactions.ManifoldConfig{
-		AgentApiManifoldConfig: s.stubAgentApiManifoldConfig,
+		AgentName:     "wut",
+		APICallerName: "exactly",
 	})
-	getResource := dt.StubGetResource(dt.StubResources{
-		"wut": dt.StubResource{Error: dependency.ErrMissing},
+	context := dt.StubContext(nil, map[string]interface{}{
+		"wut": dependency.ErrMissing,
 	})
 
-	w, err := manifold.Start(getResource)
+	w, err := manifold.Start(context)
 	c.Assert(errors.Cause(err), gc.Equals, dependency.ErrMissing)
 	c.Assert(w, gc.IsNil)
 }
 
 func (s *ManifoldSuite) TestStartMissingAPI(c *gc.C) {
 	manifold := machineactions.Manifold(machineactions.ManifoldConfig{
-		AgentApiManifoldConfig: s.stubAgentApiManifoldConfig,
+		AgentName:     "wut",
+		APICallerName: "exactly",
 	})
-	getResource := dt.StubGetResource(dt.StubResources{
-		"wut":     dt.StubResource{Output: &fakeAgent{}},
-		"exactly": dt.StubResource{Error: dependency.ErrMissing},
+	context := dt.StubContext(nil, map[string]interface{}{
+		"wut":     &fakeAgent{},
+		"exactly": dependency.ErrMissing,
 	})
 
-	w, err := manifold.Start(getResource)
+	w, err := manifold.Start(context)
 	c.Assert(errors.Cause(err), gc.Equals, dependency.ErrMissing)
 	c.Assert(w, gc.IsNil)
 }
 
 func (s *ManifoldSuite) TestStartWorkerError(c *gc.C) {
 	manifold := machineactions.Manifold(machineactions.ManifoldConfig{
-		AgentApiManifoldConfig: s.stubAgentApiManifoldConfig,
-		NewFacade:              s.newFacade(&fakeFacade{}),
-		NewWorker:              s.newWorker(nil, errors.New("blam")),
+		AgentName:     "wut",
+		APICallerName: "exactly",
+		NewFacade:     s.newFacade(&fakeFacade{}),
+		NewWorker:     s.newWorker(nil, errors.New("blam")),
 	})
 
-	w, err := manifold.Start(s.getResource)
+	w, err := manifold.Start(s.context)
 	c.Assert(err, gc.ErrorMatches, "blam")
 	c.Assert(w, gc.IsNil)
 }
@@ -113,12 +113,13 @@ func (s *ManifoldSuite) TestStartWorkerError(c *gc.C) {
 func (s *ManifoldSuite) TestStartSuccess(c *gc.C) {
 	fakeWorker := &fakeWorker{}
 	manifold := machineactions.Manifold(machineactions.ManifoldConfig{
-		AgentApiManifoldConfig: s.stubAgentApiManifoldConfig,
-		NewFacade:              s.newFacade(&fakeFacade{}),
-		NewWorker:              s.newWorker(fakeWorker, nil),
+		AgentName:     "wut",
+		APICallerName: "exactly",
+		NewFacade:     s.newFacade(&fakeFacade{}),
+		NewWorker:     s.newWorker(fakeWorker, nil),
 	})
 
-	w, err := manifold.Start(s.getResource)
+	w, err := manifold.Start(s.context)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(w, gc.Equals, fakeWorker)
 }
@@ -126,15 +127,17 @@ func (s *ManifoldSuite) TestStartSuccess(c *gc.C) {
 func (s *ManifoldSuite) TestInvalidTag(c *gc.C) {
 	fakeWorker := &fakeWorker{}
 	manifold := machineactions.Manifold(machineactions.ManifoldConfig{
-		AgentApiManifoldConfig: s.stubAgentApiManifoldConfig,
-		NewFacade:              s.newFacade(&fakeFacade{}),
-		NewWorker:              s.newWorker(fakeWorker, nil),
+		AgentName:     "wut",
+		APICallerName: "exactly",
+		NewFacade:     s.newFacade(&fakeFacade{}),
+		NewWorker:     s.newWorker(fakeWorker, nil),
+	})
+	context := dt.StubContext(nil, map[string]interface{}{
+		"wut":     &fakeAgent{tag: fakeTagErr},
+		"exactly": s.fakeCaller,
 	})
 
-	w, err := manifold.Start(dt.StubGetResource(dt.StubResources{
-		"wut":     dt.StubResource{Output: &fakeAgent{tag: fakeTagErr}},
-		"exactly": dt.StubResource{Output: s.fakeCaller},
-	}))
+	w, err := manifold.Start(context)
 	c.Assert(err, gc.ErrorMatches, "this manifold can only be used inside a machine")
 	c.Assert(w, gc.IsNil)
 }

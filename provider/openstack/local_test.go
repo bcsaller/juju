@@ -19,6 +19,7 @@ import (
 	jujuerrors "github.com/juju/errors"
 	gitjujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
+	"github.com/juju/utils"
 	"github.com/juju/utils/arch"
 	"github.com/juju/utils/series"
 	"github.com/juju/utils/ssh"
@@ -331,11 +332,11 @@ func (s *localServerSuite) TestAddressesWithPublicIP(c *gc.C) {
 		addr, err := inst.Addresses()
 		c.Assert(err, jc.ErrorIsNil)
 		c.Assert(addr, jc.SameContents, []network.Address{
-			{Value: "10.0.0.1", Type: "ipv4", NetworkName: "public", Scope: "public"},
-			{Value: "127.0.0.1", Type: "ipv4", NetworkName: "private", Scope: "local-machine"},
-			{Value: "::face::000f", Type: "hostname", NetworkName: "private", Scope: ""},
-			{Value: "127.10.0.1", Type: "ipv4", NetworkName: "public", Scope: "public"},
-			{Value: "::dead:beef:f00d", Type: "ipv6", NetworkName: "public", Scope: "public"},
+			{Value: "10.0.0.1", Type: "ipv4", Scope: "public"},
+			{Value: "127.0.0.1", Type: "ipv4", Scope: "local-machine"},
+			{Value: "::face::000f", Type: "hostname", Scope: ""},
+			{Value: "127.10.0.1", Type: "ipv4", Scope: "public"},
+			{Value: "::dead:beef:f00d", Type: "ipv6", Scope: "public"},
 		})
 		bootstrapFinished = true
 		return nil
@@ -365,10 +366,10 @@ func (s *localServerSuite) TestAddressesWithoutPublicIP(c *gc.C) {
 		addr, err := inst.Addresses()
 		c.Assert(err, jc.ErrorIsNil)
 		c.Assert(addr, jc.SameContents, []network.Address{
-			{Value: "127.0.0.1", Type: "ipv4", NetworkName: "private", Scope: "local-machine"},
-			{Value: "::face::000f", Type: "hostname", NetworkName: "private", Scope: ""},
-			{Value: "127.10.0.1", Type: "ipv4", NetworkName: "public", Scope: "public"},
-			{Value: "::dead:beef:f00d", Type: "ipv6", NetworkName: "public", Scope: "public"},
+			{Value: "127.0.0.1", Type: "ipv4", Scope: "local-machine"},
+			{Value: "::face::000f", Type: "hostname", Scope: ""},
+			{Value: "127.10.0.1", Type: "ipv4", Scope: "public"},
+			{Value: "::dead:beef:f00d", Type: "ipv6", Scope: "public"},
 		})
 		bootstrapFinished = true
 		return nil
@@ -518,6 +519,16 @@ func assertSecurityGroups(c *gc.C, env environs.Environ, expected []string) {
 	}
 }
 
+func assertInstanceIds(c *gc.C, env environs.Environ, expected ...instance.Id) {
+	insts, err := env.AllInstances()
+	c.Assert(err, jc.ErrorIsNil)
+	instIds := make([]instance.Id, len(insts))
+	for i, inst := range insts {
+		instIds[i] = inst.Id()
+	}
+	c.Assert(instIds, jc.SameContents, expected)
+}
+
 func (s *localServerSuite) TestStopInstance(c *gc.C) {
 	cfg, err := config.New(config.NoDefaults, s.TestConfig.Merge(coretesting.Attrs{
 		"firewall-mode": config.FwInstance}))
@@ -529,12 +540,19 @@ func (s *localServerSuite) TestStopInstance(c *gc.C) {
 	// Openstack now has three security groups for the server, the default
 	// group, one group for the entire environment, and another for the
 	// new instance.
-	eUUID := env.Config().UUID()
-	assertSecurityGroups(c, env, []string{"default", fmt.Sprintf("juju-%v", eUUID), fmt.Sprintf("juju-%v-%v", eUUID, instanceName)})
+	cUUID := env.Config().ControllerUUID()
+	modelUUID := env.Config().UUID()
+	allSecurityGroups := []string{
+		"default", fmt.Sprintf("juju-%v-%v", cUUID, modelUUID),
+		fmt.Sprintf("juju-%v-%v-%v", cUUID, modelUUID, instanceName),
+	}
+	assertSecurityGroups(c, env, allSecurityGroups)
 	err = env.StopInstances(inst.Id())
 	c.Assert(err, jc.ErrorIsNil)
 	// The security group for this instance is now removed.
-	assertSecurityGroups(c, env, []string{"default", fmt.Sprintf("juju-%v", eUUID)})
+	assertSecurityGroups(c, env, []string{
+		"default", fmt.Sprintf("juju-%v-%v", cUUID, modelUUID),
+	})
 }
 
 // Due to bug #1300755 it can happen that the security group intended for
@@ -559,8 +577,12 @@ func (s *localServerSuite) TestStopInstanceSecurityGroupNotDeleted(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 	instanceName := "100"
 	inst, _ := testing.AssertStartInstance(c, env, instanceName)
-	eUUID := env.Config().UUID()
-	allSecurityGroups := []string{"default", fmt.Sprintf("juju-%v", eUUID), fmt.Sprintf("juju-%v-%v", eUUID, instanceName)}
+	cUUID := env.Config().ControllerUUID()
+	modelUUID := env.Config().UUID()
+	allSecurityGroups := []string{
+		"default", fmt.Sprintf("juju-%v-%v", cUUID, modelUUID),
+		fmt.Sprintf("juju-%v-%v-%v", cUUID, modelUUID, instanceName),
+	}
 	assertSecurityGroups(c, env, allSecurityGroups)
 	err = env.StopInstances(inst.Id())
 	c.Assert(err, jc.ErrorIsNil)
@@ -575,8 +597,12 @@ func (s *localServerSuite) TestDestroyEnvironmentDeletesSecurityGroupsFWModeInst
 	c.Assert(err, jc.ErrorIsNil)
 	instanceName := "100"
 	testing.AssertStartInstance(c, env, instanceName)
-	eUUID := env.Config().UUID()
-	allSecurityGroups := []string{"default", fmt.Sprintf("juju-%v", eUUID), fmt.Sprintf("juju-%v-%v", eUUID, instanceName)}
+	cUUID := env.Config().ControllerUUID()
+	modelUUID := env.Config().UUID()
+	allSecurityGroups := []string{
+		"default", fmt.Sprintf("juju-%v-%v", cUUID, modelUUID),
+		fmt.Sprintf("juju-%v-%v-%v", cUUID, modelUUID, instanceName),
+	}
 	assertSecurityGroups(c, env, allSecurityGroups)
 	err = env.Destroy()
 	c.Check(err, jc.ErrorIsNil)
@@ -591,12 +617,90 @@ func (s *localServerSuite) TestDestroyEnvironmentDeletesSecurityGroupsFWModeGlob
 	c.Assert(err, jc.ErrorIsNil)
 	instanceName := "100"
 	testing.AssertStartInstance(c, env, instanceName)
-	eUUID := env.Config().UUID()
-	allSecurityGroups := []string{"default", fmt.Sprintf("juju-%v", eUUID), fmt.Sprintf("juju-%v-global", eUUID)}
+	cUUID := env.Config().ControllerUUID()
+	modelUUID := env.Config().UUID()
+	allSecurityGroups := []string{
+		"default", fmt.Sprintf("juju-%v-%v", cUUID, modelUUID),
+		fmt.Sprintf("juju-%v-%v-global", cUUID, modelUUID),
+	}
 	assertSecurityGroups(c, env, allSecurityGroups)
 	err = env.Destroy()
 	c.Check(err, jc.ErrorIsNil)
 	assertSecurityGroups(c, env, []string{"default"})
+}
+
+func (s *localServerSuite) TestDestroyControllerModel(c *gc.C) {
+	cfg, err := config.New(config.NoDefaults, s.TestConfig.Merge(coretesting.Attrs{
+		"uuid": utils.MustNewUUID().String(),
+	}))
+	c.Assert(err, jc.ErrorIsNil)
+	env, err := environs.New(cfg)
+	c.Assert(err, jc.ErrorIsNil)
+	controllerCfg, err := config.New(config.NoDefaults, s.TestConfig)
+	c.Assert(err, jc.ErrorIsNil)
+	controllerEnv, err := environs.New(controllerCfg)
+	c.Assert(err, jc.ErrorIsNil)
+
+	controllerInstanceName := "100"
+	testing.AssertStartInstance(c, controllerEnv, controllerInstanceName)
+	hostedModelInstanceName := "200"
+	testing.AssertStartInstance(c, env, hostedModelInstanceName)
+	cUUID := env.Config().ControllerUUID()
+	modelUUID := env.Config().UUID()
+	allControllerSecurityGroups := []string{
+		"default", fmt.Sprintf("juju-%v-%v", cUUID, cUUID),
+		fmt.Sprintf("juju-%v-%v-%v", cUUID, cUUID, controllerInstanceName),
+	}
+	allHostedModelSecurityGroups := []string{
+		"default", fmt.Sprintf("juju-%v-%v", cUUID, modelUUID),
+		fmt.Sprintf("juju-%v-%v-%v", cUUID, modelUUID, hostedModelInstanceName),
+	}
+	assertSecurityGroups(c, controllerEnv, append(
+		allControllerSecurityGroups, allHostedModelSecurityGroups...,
+	))
+
+	err = controllerEnv.Destroy()
+	c.Check(err, jc.ErrorIsNil)
+	assertSecurityGroups(c, controllerEnv, []string{"default"})
+	assertInstanceIds(c, env)
+	assertInstanceIds(c, controllerEnv)
+}
+
+func (s *localServerSuite) TestDestroyHostedModel(c *gc.C) {
+	cfg, err := config.New(config.NoDefaults, s.TestConfig.Merge(coretesting.Attrs{
+		"uuid": utils.MustNewUUID().String(),
+	}))
+	c.Assert(err, jc.ErrorIsNil)
+	env, err := environs.New(cfg)
+	c.Assert(err, jc.ErrorIsNil)
+	controllerCfg, err := config.New(config.NoDefaults, s.TestConfig)
+	c.Assert(err, jc.ErrorIsNil)
+	controllerEnv, err := environs.New(controllerCfg)
+	c.Assert(err, jc.ErrorIsNil)
+
+	controllerInstanceName := "100"
+	controllerInstance, _ := testing.AssertStartInstance(c, controllerEnv, controllerInstanceName)
+	hostedModelInstanceName := "200"
+	testing.AssertStartInstance(c, env, hostedModelInstanceName)
+	cUUID := env.Config().ControllerUUID()
+	modelUUID := env.Config().UUID()
+	allControllerSecurityGroups := []string{
+		"default", fmt.Sprintf("juju-%v-%v", cUUID, cUUID),
+		fmt.Sprintf("juju-%v-%v-%v", cUUID, cUUID, controllerInstanceName),
+	}
+	allHostedModelSecurityGroups := []string{
+		"default", fmt.Sprintf("juju-%v-%v", cUUID, modelUUID),
+		fmt.Sprintf("juju-%v-%v-%v", cUUID, modelUUID, hostedModelInstanceName),
+	}
+	assertSecurityGroups(c, controllerEnv, append(
+		allControllerSecurityGroups, allHostedModelSecurityGroups...,
+	))
+
+	err = env.Destroy()
+	c.Check(err, jc.ErrorIsNil)
+	assertSecurityGroups(c, controllerEnv, allControllerSecurityGroups)
+	assertInstanceIds(c, env)
+	assertInstanceIds(c, controllerEnv, controllerInstance.Id())
 }
 
 var instanceGathering = []struct {
@@ -927,7 +1031,7 @@ func (s *localServerSuite) TestSupportedArchitectures(c *gc.C) {
 	env := s.Open(c, s.env.Config())
 	a, err := env.SupportedArchitectures()
 	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(a, jc.SameContents, []string{"amd64", "i386", "ppc64el"})
+	c.Assert(a, jc.SameContents, []string{"amd64", "arm64", "ppc64el", "s390x"})
 }
 
 func (s *localServerSuite) TestSupportsNetworking(c *gc.C) {
@@ -959,9 +1063,12 @@ func (s *localServerSuite) TestConstraintsValidatorVocab(c *gc.C) {
 	env := s.Open(c, s.env.Config())
 	validator, err := env.ConstraintsValidator()
 	c.Assert(err, jc.ErrorIsNil)
-	cons := constraints.MustParse("arch=arm64")
+
+	// i386 is a valid arch, but is no longer supported.  No image
+	// data was created for it for the test.
+	cons := constraints.MustParse("arch=i386")
 	_, err = validator.Validate(cons)
-	c.Assert(err, gc.ErrorMatches, "invalid constraint value: arch=arm64\nvalid values are:.*")
+	c.Assert(err, gc.ErrorMatches, "invalid constraint value: arch=i386\nvalid values are:.*")
 	cons = constraints.MustParse("instance-type=foo")
 	_, err = validator.Validate(cons)
 	c.Assert(err, gc.ErrorMatches, "invalid constraint value: instance-type=foo\nvalid values are:.*")
@@ -1488,7 +1595,7 @@ func (t *localServerSuite) testStartInstanceAvailZone(c *gc.C, zone string) (ins
 	c.Assert(err, jc.ErrorIsNil)
 
 	params := environs.StartInstanceParams{Placement: "zone=" + zone}
-	result, err := testing.StartInstanceWithParams(t.env, "1", params, nil)
+	result, err := testing.StartInstanceWithParams(t.env, "1", params)
 	if err != nil {
 		return nil, err
 	}
@@ -1578,7 +1685,7 @@ func (t *localServerSuite) TestStartInstanceDistributionParams(c *gc.C) {
 			return expectedInstances, nil
 		},
 	}
-	_, err = testing.StartInstanceWithParams(t.env, "1", params, nil)
+	_, err = testing.StartInstanceWithParams(t.env, "1", params)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(mock.group, gc.DeepEquals, expectedInstances)
 }
@@ -1601,7 +1708,7 @@ func (t *localServerSuite) TestStartInstanceDistributionErrors(c *gc.C) {
 			return nil, dgErr
 		},
 	}
-	_, err = testing.StartInstanceWithParams(t.env, "1", params, nil)
+	_, err = testing.StartInstanceWithParams(t.env, "1", params)
 	c.Assert(jujuerrors.Cause(err), gc.Equals, dgErr)
 }
 
@@ -1724,8 +1831,9 @@ func (t *localServerSuite) TestInstanceTags(c *gc.C) {
 		openstack.InstanceServerDetail(instances[0]).Metadata,
 		jc.DeepEquals,
 		map[string]string{
-			"juju-model-uuid":    coretesting.ModelTag.Id(),
-			"juju-is-controller": "true",
+			"juju-model-uuid":      coretesting.ModelTag.Id(),
+			"juju-controller-uuid": coretesting.ModelTag.Id(),
+			"juju-is-controller":   "true",
 		},
 	)
 }
@@ -1743,9 +1851,10 @@ func (t *localServerSuite) TestTagInstance(c *gc.C) {
 			openstack.InstanceServerDetail(instances[0]).Metadata,
 			jc.DeepEquals,
 			map[string]string{
-				"juju-model-uuid":    coretesting.ModelTag.Id(),
-				"juju-is-controller": "true",
-				extraKey:             extraValue,
+				"juju-model-uuid":      coretesting.ModelTag.Id(),
+				"juju-controller-uuid": coretesting.ModelTag.Id(),
+				"juju-is-controller":   "true",
+				extraKey:               extraValue,
 			},
 		)
 	}

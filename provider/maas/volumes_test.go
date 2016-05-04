@@ -4,6 +4,7 @@
 package maas
 
 import (
+	"github.com/juju/gomaasapi"
 	"github.com/juju/names"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
@@ -73,13 +74,84 @@ func (s *volumeSuite) TestBuildMAASVolumeParametersWithTags(c *gc.C) {
 	})
 }
 
+func (s *volumeSuite) TestInstanceVolumesMAAS2(c *gc.C) {
+	instance := maas2Instance{
+		machine: &fakeMachine{},
+		constraintMatches: gomaasapi.ConstraintMatches{
+			Storage: map[string][]gomaasapi.BlockDevice{
+				"root": {&fakeBlockDevice{name: "sda", path: "/dev/disk/by-dname/sda", size: 250059350016}},
+				"1":    {&fakeBlockDevice{name: "sdb", path: "/dev/disk/by-dname/sdb", size: 500059350016}},
+				"2": {
+					&fakeBlockDevice{name: "sdc", path: "/dev/disk/by-dname/sdc", size: 250362438230},
+					&fakeBlockDevice{name: "sdf", path: "/dev/disk/by-dname/sdf", size: 280362438231},
+				},
+				"3": {&fakeBlockDevice{name: "sdd", path: "/dev/disk/by-dname/sdd", size: 250362438230}},
+				"4": {&fakeBlockDevice{name: "sde", path: "/dev/disk/by-dname/sde", size: 250362438230}},
+			},
+		},
+	}
+	mTag := names.NewMachineTag("1")
+	volumes, attachments, err := instance.volumes(mTag, []names.VolumeTag{
+		names.NewVolumeTag("1"),
+		names.NewVolumeTag("2"),
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	// Expect 3 volumes - root volume is ignored.
+	c.Assert(volumes, gc.HasLen, 3)
+	c.Assert(attachments, gc.HasLen, 3)
+	c.Check(volumes, jc.SameContents, []storage.Volume{{
+		names.NewVolumeTag("1"),
+		storage.VolumeInfo{
+			VolumeId:   "volume-1",
+			Size:       476893,
+			Persistent: false,
+		},
+	}, {
+		names.NewVolumeTag("2"),
+		storage.VolumeInfo{
+			VolumeId:   "volume-2",
+			Size:       238764,
+			Persistent: false,
+		},
+	}, {
+		names.NewVolumeTag("2"),
+		storage.VolumeInfo{
+			VolumeId:   "volume-2",
+			Size:       267374,
+			Persistent: false,
+		},
+	}})
+	c.Assert(attachments, jc.SameContents, []storage.VolumeAttachment{{
+		names.NewVolumeTag("1"),
+		mTag,
+		storage.VolumeAttachmentInfo{
+			DeviceLink: "/dev/disk/by-dname/sdb",
+			ReadOnly:   false,
+		},
+	}, {
+		names.NewVolumeTag("2"),
+		mTag,
+		storage.VolumeAttachmentInfo{
+			DeviceLink: "/dev/disk/by-dname/sdc",
+			ReadOnly:   false,
+		},
+	}, {
+		names.NewVolumeTag("2"),
+		mTag,
+		storage.VolumeAttachmentInfo{
+			DeviceLink: "/dev/disk/by-dname/sdf",
+			ReadOnly:   false,
+		},
+	}})
+}
+
 func (s *volumeSuite) TestInstanceVolumes(c *gc.C) {
 	obj := s.testMAASObject.TestServer.NewNode(validVolumeJson)
 	statusGetter := func(instance.Id) (string, string) {
 		return "unknown", "FAKE"
 	}
 
-	instance := maasInstance{&obj, nil, statusGetter}
+	instance := maas1Instance{&obj, nil, statusGetter}
 	mTag := names.NewMachineTag("1")
 	volumes, attachments, err := instance.volumes(mTag, []names.VolumeTag{
 		names.NewVolumeTag("1"),
@@ -138,7 +210,7 @@ func (s *volumeSuite) TestInstanceVolumesOldMass(c *gc.C) {
 		return "provisioning", "substatus"
 	}
 
-	instance := maasInstance{&obj, nil, statusGetter}
+	instance := maas1Instance{&obj, nil, statusGetter}
 	volumes, attachments, err := instance.volumes(names.NewMachineTag("1"), []names.VolumeTag{
 		names.NewVolumeTag("1"),
 		names.NewVolumeTag("2"),

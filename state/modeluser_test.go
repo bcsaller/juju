@@ -290,7 +290,7 @@ func (s *ModelUserSuite) newEnvWithOwner(c *gc.C, name string, owner names.UserT
 		"name": name,
 		"uuid": uuid.String(),
 	})
-	model, st, err := s.State.NewModel(cfg, owner)
+	model, st, err := s.State.NewModel(state.ModelArgs{Config: cfg, Owner: owner})
 	c.Assert(err, jc.ErrorIsNil)
 	defer st.Close()
 	return model
@@ -367,6 +367,11 @@ func (s *ModelUserSuite) TestIsControllerAdministrator(c *gc.C) {
 	isAdmin, err = s.State.IsControllerAdministrator(user.UserTag())
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(isAdmin, jc.IsTrue)
+
+	readonly := s.Factory.MakeModelUser(c, &factory.ModelUserParams{Access: state.ModelReadAccess})
+	isAdmin, err = s.State.IsControllerAdministrator(readonly.UserTag())
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(isAdmin, jc.IsFalse)
 }
 
 func (s *ModelUserSuite) TestIsControllerAdministratorFromOtherState(c *gc.C) {

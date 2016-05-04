@@ -13,6 +13,7 @@ import (
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api/base"
+	"github.com/juju/juju/cmd/jujud/agent/util"
 	coretesting "github.com/juju/juju/testing"
 	"github.com/juju/juju/worker"
 	"github.com/juju/juju/worker/dependency"
@@ -38,9 +39,9 @@ func (s *ManifoldSuite) TestInputs(c *gc.C) {
 
 func (s *ManifoldSuite) TestOutputBadWorker(c *gc.C) {
 	manifold := singular.Manifold(singular.ManifoldConfig{})
-	var out dependency.Flag
+	var out util.Flag
 	err := manifold.Output(&fakeWorker{}, &out)
-	c.Check(err, gc.ErrorMatches, `expected in to be a \*FlagWorker, got a .*`)
+	c.Check(err, gc.ErrorMatches, `expected in to implement Flag; got a .*`)
 	c.Check(out, gc.IsNil)
 }
 
@@ -50,7 +51,7 @@ func (s *ManifoldSuite) TestOutputBadResult(c *gc.C) {
 	fix.Run(c, func(flag *singular.FlagWorker, _ *coretesting.Clock, _ func()) {
 		var out interface{}
 		err := manifold.Output(flag, &out)
-		c.Check(err, gc.ErrorMatches, `expected out to be a \*dependency.Flag, got a .*`)
+		c.Check(err, gc.ErrorMatches, `expected out to be a \*Flag; got a .*`)
 		c.Check(out, gc.IsNil)
 	})
 }
@@ -59,7 +60,7 @@ func (s *ManifoldSuite) TestOutputSuccess(c *gc.C) {
 	manifold := singular.Manifold(singular.ManifoldConfig{})
 	fix := newFixture(c)
 	fix.Run(c, func(flag *singular.FlagWorker, _ *coretesting.Clock, _ func()) {
-		var out dependency.Flag
+		var out util.Flag
 		err := manifold.Output(flag, &out)
 		c.Check(err, jc.ErrorIsNil)
 		c.Check(out, gc.Equals, flag)
@@ -72,11 +73,11 @@ func (s *ManifoldSuite) TestStartMissingClock(c *gc.C) {
 		APICallerName: "api-caller",
 		AgentName:     "agent",
 	})
-	getResource := dt.StubGetResource(dt.StubResources{
-		"clock": dt.StubResource{Error: dependency.ErrMissing},
+	context := dt.StubContext(nil, map[string]interface{}{
+		"clock": dependency.ErrMissing,
 	})
 
-	worker, err := manifold.Start(getResource)
+	worker, err := manifold.Start(context)
 	c.Check(errors.Cause(err), gc.Equals, dependency.ErrMissing)
 	c.Check(worker, gc.IsNil)
 }
@@ -87,12 +88,12 @@ func (s *ManifoldSuite) TestStartMissingAgent(c *gc.C) {
 		APICallerName: "api-caller",
 		AgentName:     "agent",
 	})
-	getResource := dt.StubGetResource(dt.StubResources{
-		"clock":      dt.StubResource{Output: &fakeClock{}},
-		"api-caller": dt.StubResource{Error: dependency.ErrMissing},
+	context := dt.StubContext(nil, map[string]interface{}{
+		"clock":      &fakeClock{},
+		"api-caller": dependency.ErrMissing,
 	})
 
-	worker, err := manifold.Start(getResource)
+	worker, err := manifold.Start(context)
 	c.Check(errors.Cause(err), gc.Equals, dependency.ErrMissing)
 	c.Check(worker, gc.IsNil)
 }
@@ -103,13 +104,13 @@ func (s *ManifoldSuite) TestStartMissingAPICaller(c *gc.C) {
 		APICallerName: "api-caller",
 		AgentName:     "agent",
 	})
-	getResource := dt.StubGetResource(dt.StubResources{
-		"clock":      dt.StubResource{Output: &fakeClock{}},
-		"api-caller": dt.StubResource{Output: &fakeAPICaller{}},
-		"agent":      dt.StubResource{Error: dependency.ErrMissing},
+	context := dt.StubContext(nil, map[string]interface{}{
+		"clock":      &fakeClock{},
+		"api-caller": &fakeAPICaller{},
+		"agent":      dependency.ErrMissing,
 	})
 
-	worker, err := manifold.Start(getResource)
+	worker, err := manifold.Start(context)
 	c.Check(errors.Cause(err), gc.Equals, dependency.ErrMissing)
 	c.Check(worker, gc.IsNil)
 }
@@ -120,13 +121,13 @@ func (s *ManifoldSuite) TestStartWrongAgent(c *gc.C) {
 		APICallerName: "api-caller",
 		AgentName:     "agent",
 	})
-	getResource := dt.StubGetResource(dt.StubResources{
-		"clock":      dt.StubResource{Output: &fakeClock{}},
-		"api-caller": dt.StubResource{Output: &fakeAPICaller{}},
-		"agent":      dt.StubResource{Output: &mockAgent{wrongKind: true}},
+	context := dt.StubContext(nil, map[string]interface{}{
+		"clock":      &fakeClock{},
+		"api-caller": &fakeAPICaller{},
+		"agent":      &mockAgent{wrongKind: true},
 	})
 
-	worker, err := manifold.Start(getResource)
+	worker, err := manifold.Start(context)
 	c.Check(err, gc.ErrorMatches, "singular flag expected a machine agent")
 	c.Check(worker, gc.IsNil)
 }
@@ -143,13 +144,13 @@ func (s *ManifoldSuite) TestStartNewFacadeError(c *gc.C) {
 			return nil, errors.New("grark plop")
 		},
 	})
-	getResource := dt.StubGetResource(dt.StubResources{
-		"clock":      dt.StubResource{Output: &fakeClock{}},
-		"api-caller": dt.StubResource{Output: expectAPICaller},
-		"agent":      dt.StubResource{Output: &mockAgent{}},
+	context := dt.StubContext(nil, map[string]interface{}{
+		"clock":      &fakeClock{},
+		"api-caller": expectAPICaller,
+		"agent":      &mockAgent{},
 	})
 
-	worker, err := manifold.Start(getResource)
+	worker, err := manifold.Start(context)
 	c.Check(err, gc.ErrorMatches, "grark plop")
 	c.Check(worker, gc.IsNil)
 }
@@ -171,13 +172,13 @@ func (s *ManifoldSuite) TestStartNewWorkerError(c *gc.C) {
 			return nil, errors.New("blomp tik")
 		},
 	})
-	getResource := dt.StubGetResource(dt.StubResources{
-		"clock":      dt.StubResource{Output: &fakeClock{}},
-		"api-caller": dt.StubResource{Output: &fakeAPICaller{}},
-		"agent":      dt.StubResource{Output: &mockAgent{}},
+	context := dt.StubContext(nil, map[string]interface{}{
+		"clock":      &fakeClock{},
+		"api-caller": &fakeAPICaller{},
+		"agent":      &mockAgent{},
 	})
 
-	worker, err := manifold.Start(getResource)
+	worker, err := manifold.Start(context)
 	c.Check(err, gc.ErrorMatches, "blomp tik")
 	c.Check(worker, gc.IsNil)
 }
@@ -195,13 +196,13 @@ func (s *ManifoldSuite) TestStartSuccess(c *gc.C) {
 			return expectWorker, nil
 		},
 	})
-	getResource := dt.StubGetResource(dt.StubResources{
-		"clock":      dt.StubResource{Output: &fakeClock{}},
-		"api-caller": dt.StubResource{Output: &fakeAPICaller{}},
-		"agent":      dt.StubResource{Output: &mockAgent{}},
+	context := dt.StubContext(nil, map[string]interface{}{
+		"clock":      &fakeClock{},
+		"api-caller": &fakeAPICaller{},
+		"agent":      &mockAgent{},
 	})
 
-	worker, err := manifold.Start(getResource)
+	worker, err := manifold.Start(context)
 	c.Check(err, jc.ErrorIsNil)
 	c.Check(worker, gc.Equals, expectWorker)
 }

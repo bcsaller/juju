@@ -7,14 +7,17 @@ import (
 	"time"
 
 	"github.com/juju/utils/clock"
+	"github.com/juju/utils/voyeur"
 
 	coreagent "github.com/juju/juju/agent"
+	"github.com/juju/juju/cmd/jujud/agent/util"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/worker"
 	"github.com/juju/juju/worker/addresser"
 	"github.com/juju/juju/worker/agent"
 	"github.com/juju/juju/worker/apicaller"
+	"github.com/juju/juju/worker/apiconfigwatcher"
 	"github.com/juju/juju/worker/charmrevision"
 	"github.com/juju/juju/worker/charmrevision/charmrevisionmanifold"
 	"github.com/juju/juju/worker/cleaner"
@@ -22,9 +25,12 @@ import (
 	"github.com/juju/juju/worker/discoverspaces"
 	"github.com/juju/juju/worker/environ"
 	"github.com/juju/juju/worker/firewaller"
+	"github.com/juju/juju/worker/fortress"
+	"github.com/juju/juju/worker/gate"
 	"github.com/juju/juju/worker/instancepoller"
 	"github.com/juju/juju/worker/lifeflag"
 	"github.com/juju/juju/worker/metricworker"
+	"github.com/juju/juju/worker/migrationmaster"
 	"github.com/juju/juju/worker/provisioner"
 	"github.com/juju/juju/worker/servicescaler"
 	"github.com/juju/juju/worker/singular"
@@ -32,7 +38,6 @@ import (
 	"github.com/juju/juju/worker/storageprovisioner"
 	"github.com/juju/juju/worker/undertaker"
 	"github.com/juju/juju/worker/unitassigner"
-	"github.com/juju/juju/worker/util"
 )
 
 // ManifoldsConfig holds the dependencies and configuration options for a
@@ -47,6 +52,10 @@ type ManifoldsConfig struct {
 	// You should almost certainly set this value to one created by
 	// model.WrapAgent.
 	Agent coreagent.Agent
+
+	// AgentConfigChanged will be set whenever the agent's api config
+	// is updated
+	AgentConfigChanged *voyeur.Value
 
 	// Clock supplies timing services to any manifolds that need them.
 	// Only a few workers have been converted to use them fo far.
@@ -67,9 +76,9 @@ type ManifoldsConfig struct {
 	EntityStatusHistoryCount    uint
 	EntityStatusHistoryInterval time.Duration
 
-	// ModelRemoveDelay controls how long the model documents will be left
-	// lying around once the model has become dead.
-	ModelRemoveDelay time.Duration
+	// SpacesImportedGate will be unlocked when spaces are known to
+	// have been imported.
+	SpacesImportedGate gate.Lock
 }
 
 // Manifolds returns a set of interdependent dependency manifolds that will
@@ -80,14 +89,25 @@ func Manifolds(config ManifoldsConfig) dependency.Manifolds {
 
 		// The first group are foundational; the agent and clock
 		// which wrap those supplied in config, and the api-caller
-		// through everything else communicates with the apiserver.
+		// through which everything else communicates with the
+		// controller.
 		agentName: agent.Manifold(config.Agent),
 		clockName: clockManifold(config.Clock),
+		apiConfigWatcherName: apiconfigwatcher.Manifold(apiconfigwatcher.ManifoldConfig{
+			AgentName:          agentName,
+			AgentConfigChanged: config.AgentConfigChanged,
+		}),
 		apiCallerName: apicaller.Manifold(apicaller.ManifoldConfig{
 			AgentName:     agentName,
 			APIOpen:       apicaller.APIOpen,
 			NewConnection: apicaller.OnlyConnect,
 		}),
+
+		// The spaces-imported gate will be unlocked when space
+		// discovery is known to be complete. Various manifolds
+		// should also come to depend upon it (or rather, on a
+		// Flag depending on it) in the future.
+		spacesImportedGateName: gate.ManifoldEx(config.SpacesImportedGate),
 
 		// All other manifolds should depend on at least one of these
 		// three, which handle all the tasks that are safe and sane
@@ -120,6 +140,15 @@ func Manifolds(config ManifoldsConfig) dependency.Manifolds {
 			NewWorker: singular.NewWorker,
 		}),
 
+		migrationFortressName: ifNotDead(fortress.Manifold()),
+		migrationMasterName: ifNotDead(migrationmaster.Manifold(migrationmaster.ManifoldConfig{
+			APICallerName: apiCallerName,
+			FortressName:  migrationFortressName,
+
+			NewFacade: migrationmaster.NewFacade,
+			NewWorker: migrationmaster.NewWorker,
+		})),
+
 		// Everything else should be wrapped in ifResponsible,
 		// ifNotAlive, or ifNotDead, to ensure that only a single
 		// controller is administering this model at a time.
@@ -150,8 +179,6 @@ func Manifolds(config ManifoldsConfig) dependency.Manifolds {
 		undertakerName: ifNotAlive(undertaker.Manifold(undertaker.ManifoldConfig{
 			APICallerName: apiCallerName,
 			EnvironName:   environTrackerName,
-			ClockName:     clockName,
-			RemoveDelay:   config.ModelRemoveDelay,
 
 			NewFacade: undertaker.NewFacade,
 			NewWorker: undertaker.NewWorker,
@@ -161,13 +188,12 @@ func Manifolds(config ManifoldsConfig) dependency.Manifolds {
 		spaceImporterName: ifNotDead(discoverspaces.Manifold(discoverspaces.ManifoldConfig{
 			EnvironName:   environTrackerName,
 			APICallerName: apiCallerName,
-			// No UnlockerName for now; might never be necessary
-			// in exactly this form (because we should probably
-			// just have a persistent flag set/read via the api).
+			UnlockerName:  spacesImportedGateName,
 
 			NewFacade: discoverspaces.NewFacade,
 			NewWorker: discoverspaces.NewWorker,
 		})),
+
 		computeProvisionerName: ifNotDead(provisioner.Manifold(provisioner.ManifoldConfig{
 			AgentName:     agentName,
 			APICallerName: apiCallerName,
@@ -219,42 +245,57 @@ func Manifolds(config ManifoldsConfig) dependency.Manifolds {
 	}
 }
 
-// ifResponsible wraps a manifold such that it only runs if the
-// responsibility flag is set.
-func ifResponsible(manifold dependency.Manifold) dependency.Manifold {
-	return dependency.WithFlag(manifold, isResponsibleFlagName)
-}
-
-// ifNotAlive wraps a manifold such that it only runs if the
-// responsibility flag is set and the model is Dying or Dead.
-func ifNotAlive(manifold dependency.Manifold) dependency.Manifold {
-	return ifResponsible(dependency.WithFlag(manifold, notAliveFlagName))
-}
-
-// ifNotDead wraps a manifold such that it only runs if the responsibility
-// flag is set and the model is Alive or Dying.
-func ifNotDead(manifold dependency.Manifold) dependency.Manifold {
-	return ifResponsible(dependency.WithFlag(manifold, notDeadFlagName))
-}
-
 // clockManifold expresses a Clock as a ValueWorker manifold.
 func clockManifold(clock clock.Clock) dependency.Manifold {
 	return dependency.Manifold{
-		Start: func(_ dependency.GetResourceFunc) (worker.Worker, error) {
+		Start: func(_ dependency.Context) (worker.Worker, error) {
 			return util.NewValueWorker(clock)
 		},
 		Output: util.ValueWorkerOutput,
 	}
 }
 
-const (
-	agentName     = "agent"
-	clockName     = "clock"
-	apiCallerName = "api-caller"
+var (
+	// ifResponsible wraps a manifold such that it only runs if the
+	// responsibility flag is set.
+	ifResponsible = util.Housing{
+		Flags: []string{
+			isResponsibleFlagName,
+		},
+	}.Decorate
 
-	isResponsibleFlagName = "is-responsible-flag"
-	notDeadFlagName       = "not-dead-flag"
-	notAliveFlagName      = "not-alive-flag"
+	// ifNotAlive wraps a manifold such that it only runs if the
+	// responsibility flag is set and the model is Dying or Dead.
+	ifNotAlive = util.Housing{
+		Flags: []string{
+			isResponsibleFlagName,
+			notAliveFlagName,
+		},
+	}.Decorate
+
+	// ifNotDead wraps a manifold such that it only runs if the
+	// responsibility flag is set and the model is Alive or Dying.
+	ifNotDead = util.Housing{
+		Flags: []string{
+			isResponsibleFlagName,
+			notDeadFlagName,
+		},
+	}.Decorate
+)
+
+const (
+	agentName            = "agent"
+	clockName            = "clock"
+	apiConfigWatcherName = "api-config-watcher"
+	apiCallerName        = "api-caller"
+
+	spacesImportedGateName = "spaces-imported-gate"
+	isResponsibleFlagName  = "is-responsible-flag"
+	notDeadFlagName        = "not-dead-flag"
+	notAliveFlagName       = "not-alive-flag"
+
+	migrationFortressName = "migration-fortress"
+	migrationMasterName   = "migration-master"
 
 	environTrackerName       = "environ-tracker"
 	undertakerName           = "undertaker"

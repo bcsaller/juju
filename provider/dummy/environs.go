@@ -188,7 +188,6 @@ type OpStartInstance struct {
 	Instance         instance.Instance
 	Constraints      constraints.Value
 	SubnetsToZones   map[network.Id][]string
-	Networks         []string
 	NetworkInfo      []network.InterfaceInfo
 	Volumes          []storage.Volume
 	Info             *mongo.MongoInfo
@@ -250,6 +249,7 @@ type environState struct {
 	apiListener     net.Listener
 	apiServer       *apiserver.Server
 	apiState        *state.State
+	apiStatePool    *state.StatePool
 	bootstrapConfig *config.Config
 	preferIPv6      bool
 }
@@ -316,16 +316,28 @@ func (state *environState) destroy() {
 	if !state.bootstrapped {
 		return
 	}
+
 	if state.apiServer != nil {
 		if err := state.apiServer.Stop(); err != nil && mongoAlive() {
 			panic(err)
 		}
 		state.apiServer = nil
+	}
+
+	if state.apiStatePool != nil {
+		if err := state.apiStatePool.Close(); err != nil && mongoAlive() {
+			panic(err)
+		}
+		state.apiStatePool = nil
+	}
+
+	if state.apiState != nil {
 		if err := state.apiState.Close(); err != nil && mongoAlive() {
 			panic(err)
 		}
 		state.apiState = nil
 	}
+
 	if mongoAlive() {
 		gitjujutesting.MgoServer.Reset()
 	}
@@ -349,6 +361,17 @@ func (e *environ) GetStateInAPIServer() *state.State {
 		panic(err)
 	}
 	return st.apiState
+}
+
+// GetStatePoolInAPIServer returns the StatePool used by the API
+// server.  As for GetStatePoolInAPIServer, this is so code in the
+// test suite can trigger Syncs etc.
+func (e *environ) GetStatePoolInAPIServer() *state.StatePool {
+	st, err := e.state()
+	if err != nil {
+		panic(err)
+	}
+	return st.apiStatePool
 }
 
 // newState creates the state for a new environment with the given name.
@@ -740,12 +763,15 @@ func (e *environ) Bootstrap(ctx environs.BootstrapContext, args environs.Bootstr
 		logger.Debugf("setting password for %q to %q", owner.Name(), password)
 		owner.SetPassword(password)
 
+		estate.apiStatePool = state.NewStatePool(st)
+
 		estate.apiServer, err = apiserver.NewServer(st, estate.apiListener, apiserver.ServerConfig{
-			Cert:    []byte(testing.ServerCert),
-			Key:     []byte(testing.ServerKey),
-			Tag:     names.NewMachineTag("0"),
-			DataDir: DataDir,
-			LogDir:  LogDir,
+			Cert:      []byte(testing.ServerCert),
+			Key:       []byte(testing.ServerKey),
+			Tag:       names.NewMachineTag("0"),
+			DataDir:   DataDir,
+			LogDir:    LogDir,
+			StatePool: estate.apiStatePool,
 		})
 		if err != nil {
 			panic(err)
@@ -1093,7 +1119,7 @@ func (env *environ) Spaces() ([]network.SpaceInfo, error) {
 
 // SupportsAddressAllocation is specified on environs.Networking.
 func (env *environ) SupportsAddressAllocation(subnetId network.Id) (bool, error) {
-	if !environs.AddressAllocationEnabled() {
+	if !environs.AddressAllocationEnabled("dummy") {
 		return false, errors.NotSupportedf("address allocation")
 	}
 
@@ -1111,7 +1137,7 @@ func (env *environ) SupportsAddressAllocation(subnetId network.Id) (bool, error)
 // AllocateAddress requests an address to be allocated for the
 // given instance on the given subnet.
 func (env *environ) AllocateAddress(instId instance.Id, subnetId network.Id, addr *network.Address, macAddress, hostname string) error {
-	if !environs.AddressAllocationEnabled() {
+	if !environs.AddressAllocationEnabled("dummy") {
 		// Any instId starting with "i-alloc-" when the feature flag is off will
 		// still work, in order to be able to test MAAS 1.8+ environment where
 		// we can use devices for containers.
@@ -1155,7 +1181,7 @@ func (env *environ) AllocateAddress(instId instance.Id, subnetId network.Id, add
 // ReleaseAddress releases a specific address previously allocated with
 // AllocateAddress.
 func (env *environ) ReleaseAddress(instId instance.Id, subnetId network.Id, addr network.Address, macAddress, hostname string) error {
-	if !environs.AddressAllocationEnabled() {
+	if !environs.AddressAllocationEnabled("dummy") {
 		return errors.NotSupportedf("address allocation")
 	}
 
@@ -1202,7 +1228,6 @@ func (env *environ) NetworkInterfaces(instId instance.Id) ([]network.InterfaceIn
 			ProviderId:       network.Id(fmt.Sprintf("dummy-eth%d", i)),
 			ProviderSubnetId: network.Id("dummy-" + netName),
 			InterfaceType:    network.EthernetInterface,
-			NetworkName:      "juju-" + netName,
 			CIDR:             fmt.Sprintf("0.%d.0.0/24", (i+1)*10),
 			InterfaceName:    fmt.Sprintf("eth%d", i),
 			VLANTag:          i,
@@ -1229,7 +1254,6 @@ func (env *environ) NetworkInterfaces(instId instance.Id) ([]network.InterfaceIn
 		info = []network.InterfaceInfo{{
 			DeviceIndex:   0,
 			ProviderId:    network.Id("dummy-eth0"),
-			NetworkName:   "juju-public",
 			InterfaceName: "eth0",
 			MACAddress:    "aa:bb:cc:dd:ee:f0",
 			Disabled:      false,

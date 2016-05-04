@@ -37,10 +37,6 @@ type MigrationSuite struct {
 	ConnSuite
 }
 
-type statusSetter interface {
-	SetStatus(status.Status, string, map[string]interface{}) error
-}
-
 func (s *MigrationSuite) setLatestTools(c *gc.C, latestTools version.Number) {
 	dbModel, err := s.State.Model()
 	c.Assert(err, jc.ErrorIsNil)
@@ -61,11 +57,9 @@ func (s *MigrationSuite) setRandSequenceValue(c *gc.C, name string) int {
 }
 
 func (s *MigrationSuite) primeStatusHistory(c *gc.C, entity statusSetter, statusVal status.Status, count int) {
-	for i := 0; i < count; i++ {
-		c.Logf("setting status for %v", entity)
-		err := entity.SetStatus(statusVal, "", map[string]interface{}{"index": count - i})
-		c.Assert(err, jc.ErrorIsNil)
-	}
+	primeStatusHistory(c, entity, statusVal, count, func(i int) map[string]interface{} {
+		return map[string]interface{}{"index": count - i}
+	})
 }
 
 func (s *MigrationSuite) makeServiceWithLeader(c *gc.C, serviceName string, count int, leader int) {
@@ -97,6 +91,7 @@ var _ = gc.Suite(&MigrationExportSuite{})
 
 func (s *MigrationExportSuite) checkStatusHistory(c *gc.C, history []description.Status, statusVal status.Status) {
 	for i, st := range history {
+		c.Logf("status history #%d: %s", i, st.Updated())
 		c.Check(st.Value(), gc.Equals, string(statusVal))
 		c.Check(st.Message(), gc.Equals, "")
 		c.Check(st.Data(), jc.DeepEquals, map[string]interface{}{"index": i + 1})
@@ -359,12 +354,12 @@ func (s *MigrationExportSuite) TestUnitsOpenPorts(c *gc.C) {
 	machines := model.Machines()
 	c.Assert(machines, gc.HasLen, 1)
 
-	ports := machines[0].NetworkPorts()
+	ports := machines[0].OpenedPorts()
 	c.Assert(ports, gc.HasLen, 1)
 
-	network := ports[0]
-	c.Assert(network.NetworkName(), gc.Equals, "juju-public")
-	opened := network.OpenPorts()
+	port := ports[0]
+	c.Assert(port.SubnetID(), gc.Equals, "")
+	opened := port.OpenPorts()
 	c.Assert(opened, gc.HasLen, 1)
 	c.Assert(opened[0].UnitName(), gc.Equals, unit.Name())
 }

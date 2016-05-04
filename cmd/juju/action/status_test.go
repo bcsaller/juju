@@ -25,11 +25,7 @@ var _ = gc.Suite(&StatusSuite{})
 
 func (s *StatusSuite) SetUpTest(c *gc.C) {
 	s.BaseActionSuite.SetUpTest(c)
-	s.subcommand, _ = action.NewStatusCommand(s.store)
-}
-
-func (s *StatusSuite) TestHelp(c *gc.C) {
-	s.checkHelp(c, s.subcommand)
+	s.subcommand, _ = action.NewStatusCommandForTest(s.store)
 }
 
 func (s *StatusSuite) TestRun(c *gc.C) {
@@ -49,6 +45,26 @@ func (s *StatusSuite) TestRun(c *gc.C) {
 	errNotFoundForPrefix := `no actions found matching prefix "` + prefix + `"`
 	errFoundTagButNoResults := `identifier "` + prefix + `" matched action\(s\) \[.*\], but found no results`
 
+	nameArgs := []string{"--name", "action_name"}
+	resultMany := params.ActionsByNames{[]params.ActionsByName{{
+		Name: "1",
+	}, {
+		Name: "2",
+	}}}
+
+	resultOne := params.ActionsByNames{[]params.ActionsByName{{
+		Name:    "action_name",
+		Actions: result1,
+	}}}
+
+	errNames := &params.Error{
+		Message: "whoops:",
+	}
+
+	resultOneError := params.ActionsByNames{[]params.ActionsByName{{
+		Error: errNames,
+	}}}
+
 	tests := []statusTestCase{
 		{expectError: errNotFound},
 		{args: emptyArgs, expectError: errNotFound},
@@ -62,6 +78,10 @@ func (s *StatusSuite) TestRun(c *gc.C) {
 		{args: prefixArgs, expectError: errFoundTagButNoResults, tags: tagsForIdPrefix(prefix, faketag)},
 		{args: prefixArgs, tags: tagsForIdPrefix(prefix, faketag), results: result1},
 		{args: prefixArgs, tags: tagsForIdPrefix(prefix, faketag, faketag2), results: result2},
+		{args: nameArgs, actionsByNames: resultMany, expectError: "expected one result got 2"},
+		{args: nameArgs, actionsByNames: resultOneError, expectError: errNames.Message},
+		{args: nameArgs, actionsByNames: params.ActionsByNames{[]params.ActionsByName{{Name: "action_name"}}}, expectError: "no actions were found for name action_name"},
+		{args: nameArgs, actionsByNames: resultOne, results: result1},
 	}
 
 	for i, test := range tests {
@@ -77,13 +97,14 @@ func (s *StatusSuite) runTestCase(c *gc.C, tc statusTestCase) {
 			5*time.Second, // 5 second test timeout
 			tc.tags,
 			tc.results,
+			tc.actionsByNames,
 			"", // No API error
 		)
 
 		restore := s.patchAPIClient(fakeClient)
 		defer restore()
 
-		s.subcommand, _ = action.NewStatusCommand(s.store)
+		s.subcommand, _ = action.NewStatusCommandForTest(s.store)
 		args := append([]string{modelFlag, "admin"}, tc.args...)
 		ctx, err := testing.RunCommand(c, s.subcommand, args...)
 		if tc.expectError == "" {
@@ -101,8 +122,9 @@ func (s *StatusSuite) runTestCase(c *gc.C, tc statusTestCase) {
 }
 
 type statusTestCase struct {
-	args        []string
-	expectError string
-	tags        params.FindTagsResults
-	results     []params.ActionResult
+	args           []string
+	expectError    string
+	tags           params.FindTagsResults
+	results        []params.ActionResult
+	actionsByNames params.ActionsByNames
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/juju/juju/api"
 	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/apiserver/params"
+	"github.com/juju/juju/charmstore"
 	"github.com/juju/juju/constraints"
 	"github.com/juju/juju/instance"
 	"github.com/juju/juju/storage"
@@ -61,8 +62,8 @@ func (c *Client) ModelUUID() string {
 
 // DeployArgs holds the arguments to be sent to Client.ServiceDeploy.
 type DeployArgs struct {
-	// CharmURL is the URL of the charm to deploy.
-	CharmURL string
+	// CharmID identifies the charm to deploy.
+	CharmID charmstore.CharmID
 	// ServiceName is the name to give the service.
 	ServiceName string
 	// Series to be used for the machine.
@@ -77,8 +78,6 @@ type DeployArgs struct {
 	// Placement directives on where the machines for the unit must be
 	// created.
 	Placement []*instance.Placement
-	// Networks contains names of networks to deploy on.
-	Networks []string
 	// Storage contains Constraints specifying how storage should be
 	// handled.
 	Storage map[string]storage.Constraints
@@ -89,23 +88,20 @@ type DeployArgs struct {
 	Resources map[string]string
 }
 
-// Deploy obtains the charm, either locally or from the charm store,
-// and deploys it. It allows the specification of requested networks
-// that must be present on the machines where the service is
-// deployed. Another way to specify networks to include/exclude is
-// using constraints. Placement directives, if provided, specify the
-// machine on which the charm is deployed.
+// Deploy obtains the charm, either locally or from the charm store, and deploys
+// it. Placement directives, if provided, specify the machine on which the charm
+// is deployed.
 func (c *Client) Deploy(args DeployArgs) error {
 	deployArgs := params.ServicesDeploy{
 		Services: []params.ServiceDeploy{{
 			ServiceName:      args.ServiceName,
 			Series:           args.Series,
-			CharmUrl:         args.CharmURL,
+			CharmUrl:         args.CharmID.URL.String(),
+			Channel:          string(args.CharmID.Channel),
 			NumUnits:         args.NumUnits,
 			ConfigYAML:       args.ConfigYAML,
 			Constraints:      args.Cons,
 			Placement:        args.Placement,
-			Networks:         args.Networks,
 			Storage:          args.Storage,
 			EndpointBindings: args.EndpointBindings,
 			Resources:        args.Resources,
@@ -140,8 +136,8 @@ func (c *Client) GetCharmURL(serviceName string) (*charm.URL, error) {
 type SetCharmConfig struct {
 	// ServiceName is the name of the service to set the charm on.
 	ServiceName string
-	// CharmUrl is the url for the charm.
-	CharmUrl string
+	// CharmID identifies the charm.
+	CharmID charmstore.CharmID
 	// ForceSeries forces the use of the charm even if it doesn't match the
 	// series of the unit.
 	ForceSeries bool
@@ -156,7 +152,8 @@ type SetCharmConfig struct {
 func (c *Client) SetCharm(cfg SetCharmConfig) error {
 	args := params.ServiceSetCharm{
 		ServiceName: cfg.ServiceName,
-		CharmUrl:    cfg.CharmUrl,
+		CharmUrl:    cfg.CharmID.URL.String(),
+		Channel:     string(cfg.CharmID.Channel),
 		ForceSeries: cfg.ForceSeries,
 		ForceUnits:  cfg.ForceUnits,
 		ResourceIDs: cfg.ResourceIDs,

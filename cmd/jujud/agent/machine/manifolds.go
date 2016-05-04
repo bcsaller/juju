@@ -10,21 +10,26 @@ import (
 	coreagent "github.com/juju/juju/agent"
 	"github.com/juju/juju/api"
 	apideployer "github.com/juju/juju/api/deployer"
+	"github.com/juju/juju/cmd/jujud/agent/util"
 	"github.com/juju/juju/state"
 	"github.com/juju/juju/worker"
 	"github.com/juju/juju/worker/agent"
 	"github.com/juju/juju/worker/apiaddressupdater"
 	"github.com/juju/juju/worker/apicaller"
+	"github.com/juju/juju/worker/apiconfigwatcher"
 	"github.com/juju/juju/worker/authenticationworker"
 	"github.com/juju/juju/worker/dependency"
 	"github.com/juju/juju/worker/deployer"
 	"github.com/juju/juju/worker/diskmanager"
+	"github.com/juju/juju/worker/fortress"
 	"github.com/juju/juju/worker/gate"
+	"github.com/juju/juju/worker/hostkeyreporter"
 	"github.com/juju/juju/worker/identityfilewriter"
 	"github.com/juju/juju/worker/logger"
 	"github.com/juju/juju/worker/logsender"
 	"github.com/juju/juju/worker/machineactions"
 	"github.com/juju/juju/worker/machiner"
+	"github.com/juju/juju/worker/migrationminion"
 	"github.com/juju/juju/worker/proxyupdater"
 	"github.com/juju/juju/worker/reboot"
 	"github.com/juju/juju/worker/resumer"
@@ -35,8 +40,6 @@ import (
 	"github.com/juju/juju/worker/toolsversionchecker"
 	"github.com/juju/juju/worker/upgrader"
 	"github.com/juju/juju/worker/upgradesteps"
-	"github.com/juju/juju/worker/upgradewaiter"
-	"github.com/juju/juju/worker/util"
 	"github.com/juju/utils/clock"
 	"github.com/juju/version"
 )
@@ -50,6 +53,11 @@ type ManifoldsConfig struct {
 	// AgentConfigChanged is set whenever the machine agent's config
 	// is updated.
 	AgentConfigChanged *voyeur.Value
+
+	// RootDir is the root directory that any worker that needs to
+	// access local filesystems should use as a base. In actual use it
+	// will be "" but it may be overriden in tests.
+	RootDir string
 
 	// PreviousAgentVersion passes through the version the machine
 	// agent was running before the current restart.
@@ -112,7 +120,7 @@ type ManifoldsConfig struct {
 func Manifolds(config ManifoldsConfig) dependency.Manifolds {
 
 	// connectFilter exists:
-	//  1) to let us retry api connections immeduately on password change,
+	//  1) to let us retry api connections immediately on password change,
 	//     rather than causing the dependency engine to wait for a while;
 	//  2) to ensure that certain connection failures correctly trigger
 	//     complete agent removal. (It's not safe to let any agent other
@@ -167,10 +175,21 @@ func Manifolds(config ManifoldsConfig) dependency.Manifolds {
 		// The stateworkers manifold starts workers which rely on a
 		// *state.State but which haven't been converted to run
 		// directly under the dependency engine yet. This manifold
-		// will be removed once all such workers have been converted.
+		// will be removed once all such workers have been converted;
+		// until then, the workers are expected to handle their own
+		// checks for upgrades etc, rather than blocking this whole
+		// worker on upgrade completion.
 		stateWorkersName: StateWorkersManifold(StateWorkersConfig{
 			StateName:         stateName,
 			StartStateWorkers: config.StartStateWorkers,
+		}),
+
+		// The api-config-watcher manifold monitors the API server
+		// addresses in the agent config and bounces when they
+		// change. It's required as part of model migrations.
+		apiConfigWatcherName: apiconfigwatcher.Manifold(apiconfigwatcher.ManifoldConfig{
+			AgentName:          agentName,
+			AgentConfigChanged: config.AgentConfigChanged,
 		}),
 
 		// The api caller is a thin concurrent wrapper around a connection
@@ -179,22 +198,35 @@ func Manifolds(config ManifoldsConfig) dependency.Manifolds {
 		// how this works when we consolidate the agents; might be best to
 		// handle the auth changes server-side..?
 		apiCallerName: apicaller.Manifold(apicaller.ManifoldConfig{
-			AgentName:     agentName,
-			APIOpen:       apicaller.APIOpen,
-			NewConnection: apicaller.ScaryConnect,
-			Filter:        connectFilter,
+			AgentName:            agentName,
+			APIConfigWatcherName: apiConfigWatcherName,
+			APIOpen:              apicaller.APIOpen,
+			NewConnection:        apicaller.ScaryConnect,
+			Filter:               connectFilter,
 		}),
 
 		// The upgrade steps gate is used to coordinate workers which
 		// shouldn't do anything until the upgrade-steps worker has
-		// finished running any required upgrade steps.
+		// finished running any required upgrade steps. The flag of
+		// similar name is used to implement the isFullyUpgraded func
+		// that keeps upgrade concerns out of unrelated manifolds.
 		upgradeStepsGateName: gate.ManifoldEx(config.UpgradeStepsLock),
+		upgradeStepsFlagName: gate.FlagManifold(gate.FlagManifoldConfig{
+			GateName:  upgradeStepsGateName,
+			NewWorker: gate.NewFlagWorker,
+		}),
 
 		// The upgrade check gate is used to coordinate workers which
 		// shouldn't do anything until the upgrader worker has
-		// completed it's first check for a new tools version to
-		// upgrade to.
+		// completed its first check for a new tools version to
+		// upgrade to. The flag of similar name is used to implement
+		// the isFullyUpgraded func that keeps upgrade concerns out of
+		// unrelated manifolds.
 		upgradeCheckGateName: gate.ManifoldEx(config.UpgradeCheckLock),
+		upgradeCheckFlagName: gate.FlagManifold(gate.FlagManifoldConfig{
+			GateName:  upgradeCheckGateName,
+			NewWorker: gate.NewFlagWorker,
+		}),
 
 		// The upgrader is a leaf worker that returns a specific error
 		// type recognised by the machine agent, causing other workers
@@ -223,188 +255,192 @@ func Manifolds(config ManifoldsConfig) dependency.Manifolds {
 			PreUpgradeSteps:      config.PreUpgradeSteps,
 		}),
 
+		// The migration minion handles the agent side aspects of model migrations.
+		migrationFortressName: ifFullyUpgraded(fortress.Manifold()),
+		migrationMinionName: ifFullyUpgraded(migrationminion.Manifold(migrationminion.ManifoldConfig{
+			AgentName:     agentName,
+			APICallerName: apiCallerName,
+			FortressName:  migrationFortressName,
+
+			NewFacade: migrationminion.NewFacade,
+			NewWorker: migrationminion.NewWorker,
+		})),
+
 		// The serving-info-setter manifold sets grabs the state
 		// serving info from the API connection and writes it to the
 		// agent config.
-		servingInfoSetterName: ServingInfoSetterManifold(ServingInfoSetterConfig{
+		servingInfoSetterName: ifFullyUpgraded(ServingInfoSetterManifold(ServingInfoSetterConfig{
 			AgentName:     agentName,
 			APICallerName: apiCallerName,
-		}),
-
-		// The upgradewaiter manifold aggregates the
-		// upgrade-steps-gate and upgrade-check-gate manifolds into
-		// one boolean output. It makes it easy to create manifolds
-		// which must only run after these upgrade events have
-		// occured.
-		upgradeWaiterName: upgradewaiter.Manifold(upgradewaiter.ManifoldConfig{
-			UpgradeStepsWaiterName: upgradeStepsGateName,
-			UpgradeCheckWaiterName: upgradeCheckGateName,
-		}),
+		})),
 
 		// The apiworkers manifold starts workers which rely on the
 		// machine agent's API connection but have not been converted
 		// to work directly under the dependency engine. It waits for
 		// upgrades to be finished before starting these workers.
-		apiWorkersName: APIWorkersManifold(APIWorkersConfig{
-			APICallerName:     apiCallerName,
-			UpgradeWaiterName: upgradeWaiterName,
-			StartAPIWorkers:   config.StartAPIWorkers,
-		}),
+		apiWorkersName: ifFullyUpgraded(APIWorkersManifold(APIWorkersConfig{
+			APICallerName:   apiCallerName,
+			StartAPIWorkers: config.StartAPIWorkers,
+		})),
 
 		// The reboot manifold manages a worker which will reboot the
 		// machine when requested. It needs an API connection and
 		// waits for upgrades to be complete.
-		rebootName: reboot.Manifold(reboot.ManifoldConfig{
-			AgentName:         agentName,
-			APICallerName:     apiCallerName,
-			UpgradeWaiterName: upgradeWaiterName,
-		}),
+		rebootName: ifFullyUpgraded(reboot.Manifold(reboot.ManifoldConfig{
+			AgentName:     agentName,
+			APICallerName: apiCallerName,
+		})),
 
 		// The logging config updater is a leaf worker that indirectly
-		// controls the messages sent via the log sender or according to
-		// changes in environment config. We should only need one of these
-		// in a consolidated agent.
-		loggingConfigUpdaterName: logger.Manifold(logger.ManifoldConfig{
-			AgentName:         agentName,
-			APICallerName:     apiCallerName,
-			UpgradeWaiterName: upgradeWaiterName,
-		}),
+		// controls the messages sent via the log sender or rsyslog,
+		// according to changes in environment config. We should only need
+		// one of these in a consolidated agent.
+		loggingConfigUpdaterName: ifFullyUpgraded(logger.Manifold(logger.ManifoldConfig{
+			AgentName:     agentName,
+			APICallerName: apiCallerName,
+		})),
 
 		// The diskmanager worker periodically lists block devices on the
 		// machine it runs on. This worker will be run on all Juju-managed
 		// machines (one per machine agent).
-		diskmanagerName: diskmanager.Manifold(diskmanager.ManifoldConfig{
-			AgentName:         agentName,
-			APICallerName:     apiCallerName,
-			UpgradeWaiterName: upgradeWaiterName,
-		}),
+		diskManagerName: ifFullyUpgraded(diskmanager.Manifold(diskmanager.ManifoldConfig{
+			AgentName:     agentName,
+			APICallerName: apiCallerName,
+		})),
 
 		// The proxy config updater is a leaf worker that sets http/https/apt/etc
 		// proxy settings.
-		proxyConfigUpdater: proxyupdater.Manifold(proxyupdater.ManifoldConfig{
-			AgentName:         agentName,
-			APICallerName:     apiCallerName,
-			UpgradeWaiterName: upgradeWaiterName,
-		}),
+		proxyConfigUpdater: ifFullyUpgraded(proxyupdater.Manifold(proxyupdater.ManifoldConfig{
+			AgentName:     agentName,
+			APICallerName: apiCallerName,
+		})),
 
 		// The api address updater is a leaf worker that rewrites agent config
 		// as the state server addresses change. We should only need one of
 		// these in a consolidated agent.
-		apiAddressUpdaterName: apiaddressupdater.Manifold(apiaddressupdater.ManifoldConfig{
-			AgentName:         agentName,
-			APICallerName:     apiCallerName,
-			UpgradeWaiterName: upgradeWaiterName,
-		}),
+		apiAddressUpdaterName: ifFullyUpgraded(apiaddressupdater.Manifold(apiaddressupdater.ManifoldConfig{
+			AgentName:     agentName,
+			APICallerName: apiCallerName,
+		})),
 
 		// The machiner Worker will wait for the identified machine to become
 		// Dying and make it Dead; or until the machine becomes Dead by other
 		// means.
-		machinerName: machiner.Manifold(machiner.ManifoldConfig{
-			PostUpgradeManifoldConfig: util.PostUpgradeManifoldConfig{
-				AgentName:         agentName,
-				APICallerName:     apiCallerName,
-				UpgradeWaiterName: upgradeWaiterName,
-			},
-		}),
+		machinerName: ifFullyUpgraded(machiner.Manifold(machiner.ManifoldConfig{
+			AgentName:     agentName,
+			APICallerName: apiCallerName,
+		})),
 
 		// The log sender is a leaf worker that sends log messages to some
 		// API server, when configured so to do. We should only need one of
 		// these in a consolidated agent.
-		logSenderName: logsender.Manifold(logsender.ManifoldConfig{
-			LogSource: config.LogSource,
-			PostUpgradeManifoldConfig: util.PostUpgradeManifoldConfig{
-				AgentName:         agentName,
-				APICallerName:     apiCallerName,
-				UpgradeWaiterName: upgradeWaiterName,
-			},
-		}),
+		//
+		// NOTE: the LogSource will buffer a large number of messages as an upgrade
+		// runs; it currently seems better to fill the buffer and send when stable,
+		// optimising for stable controller upgrades rather than up-to-the-moment
+		// observable normal-machine upgrades.
+		logSenderName: ifFullyUpgraded(logsender.Manifold(logsender.ManifoldConfig{
+			APICallerName: apiCallerName,
+			LogSource:     config.LogSource,
+		})),
 
 		// The deployer worker is responsible for deploying and recalling unit
 		// agents, according to changes in a set of state units; and for the
 		// final removal of its agents' units from state when they are no
 		// longer needed.
-		deployerName: deployer.Manifold(deployer.ManifoldConfig{
+		deployerName: ifFullyUpgraded(deployer.Manifold(deployer.ManifoldConfig{
 			NewDeployContext: config.NewDeployContext,
-			PostUpgradeManifoldConfig: util.PostUpgradeManifoldConfig{
-				AgentName:         agentName,
-				APICallerName:     apiCallerName,
-				UpgradeWaiterName: upgradeWaiterName,
-			},
-		}),
+			AgentName:        agentName,
+			APICallerName:    apiCallerName,
+		})),
 
-		authenticationworkerName: authenticationworker.Manifold(authenticationworker.ManifoldConfig{
-			AgentName:         agentName,
-			APICallerName:     apiCallerName,
-			UpgradeWaiterName: upgradeWaiterName,
-		}),
+		authenticationWorkerName: ifFullyUpgraded(authenticationworker.Manifold(authenticationworker.ManifoldConfig{
+			AgentName:     agentName,
+			APICallerName: apiCallerName,
+		})),
 
 		// The storageProvisioner worker manages provisioning
 		// (deprovisioning), and attachment (detachment) of first-class
 		// volumes and filesystems.
-		storageprovisionerName: storageprovisioner.MachineManifold(storageprovisioner.MachineManifoldConfig{
-			PostUpgradeManifoldConfig: util.PostUpgradeManifoldConfig{
-				AgentName:         agentName,
-				APICallerName:     apiCallerName,
-				UpgradeWaiterName: upgradeWaiterName},
-			Clock: config.Clock,
-		}),
+		storageProvisionerName: ifFullyUpgraded(storageprovisioner.MachineManifold(storageprovisioner.MachineManifoldConfig{
+			AgentName:     agentName,
+			APICallerName: apiCallerName,
+			Clock:         config.Clock,
+		})),
 
-		resumerName: resumer.Manifold(resumer.ManifoldConfig{
-			AgentName:         agentName,
-			APICallerName:     apiCallerName,
-			UpgradeWaiterName: upgradeWaiterName,
-		}),
+		resumerName: ifFullyUpgraded(resumer.Manifold(resumer.ManifoldConfig{
+			AgentName:     agentName,
+			APICallerName: apiCallerName,
+		})),
 
-		identityFileWriterName: identityfilewriter.Manifold(identityfilewriter.ManifoldConfig{
-			AgentName:         agentName,
-			APICallerName:     apiCallerName,
-			UpgradeWaiterName: upgradeWaiterName,
-		}),
+		identityFileWriterName: ifFullyUpgraded(identityfilewriter.Manifold(identityfilewriter.ManifoldConfig{
+			AgentName:     agentName,
+			APICallerName: apiCallerName,
+		})),
 
-		toolsversioncheckerName: toolsversionchecker.Manifold(toolsversionchecker.ManifoldConfig{
-			AgentName:         agentName,
-			APICallerName:     apiCallerName,
-			UpgradeWaiterName: upgradeWaiterName,
-		}),
+		toolsVersionCheckerName: ifFullyUpgraded(toolsversionchecker.Manifold(toolsversionchecker.ManifoldConfig{
+			AgentName:     agentName,
+			APICallerName: apiCallerName,
+		})),
 
-		machineActionName: machineactions.Manifold(machineactions.ManifoldConfig{
-			AgentApiManifoldConfig: util.AgentApiManifoldConfig{
-				AgentName:     agentName,
-				APICallerName: apiCallerName,
-			},
-			NewFacade: machineactions.NewFacade,
-			NewWorker: machineactions.NewMachineActionsWorker,
-		}),
+		machineActionName: ifFullyUpgraded(machineactions.Manifold(machineactions.ManifoldConfig{
+			AgentName:     agentName,
+			APICallerName: apiCallerName,
+			NewFacade:     machineactions.NewFacade,
+			NewWorker:     machineactions.NewMachineActionsWorker,
+		})),
+
+		hostKeyReporterName: ifFullyUpgraded(hostkeyreporter.Manifold(hostkeyreporter.ManifoldConfig{
+			AgentName:     agentName,
+			APICallerName: apiCallerName,
+			RootDir:       config.RootDir,
+			NewFacade:     hostkeyreporter.NewFacade,
+			NewWorker:     hostkeyreporter.NewWorker,
+		})),
 	}
 }
 
+var ifFullyUpgraded = util.Housing{
+	Flags: []string{
+		upgradeStepsFlagName,
+		upgradeCheckFlagName,
+	},
+}.Decorate
+
 const (
-	agentName                = "agent"
-	terminationName          = "termination"
-	stateConfigWatcherName   = "state-config-watcher"
-	stateName                = "state"
-	stateWorkersName         = "stateworkers"
-	apiCallerName            = "api-caller"
-	upgradeStepsGateName     = "upgrade-steps-gate"
-	upgradeCheckGateName     = "upgrade-check-gate"
-	upgraderName             = "upgrader"
-	upgradeStepsName         = "upgradesteps"
-	upgradeWaiterName        = "upgradewaiter"
-	uninstallerName          = "uninstaller"
+	agentName              = "agent"
+	terminationName        = "termination-signal-handler"
+	stateConfigWatcherName = "state-config-watcher"
+	stateName              = "state"
+	stateWorkersName       = "unconverted-state-workers"
+	apiCallerName          = "api-caller"
+
+	upgraderName         = "upgrader"
+	upgradeStepsName     = "upgrade-steps-runner"
+	upgradeStepsGateName = "upgrade-steps-gate"
+	upgradeStepsFlagName = "upgrade-steps-flag"
+	upgradeCheckGateName = "upgrade-check-gate"
+	upgradeCheckFlagName = "upgrade-check-flag"
+
+	migrationFortressName = "migration-fortress"
+	migrationMinionName   = "migration-minion"
+
 	servingInfoSetterName    = "serving-info-setter"
-	apiWorkersName           = "apiworkers"
-	rebootName               = "reboot"
+	apiWorkersName           = "unconverted-api-workers"
+	rebootName               = "reboot-executor"
 	loggingConfigUpdaterName = "logging-config-updater"
-	diskmanagerName          = "disk-manager"
+	diskManagerName          = "disk-manager"
 	proxyConfigUpdater       = "proxy-config-updater"
 	apiAddressUpdaterName    = "api-address-updater"
 	machinerName             = "machiner"
 	logSenderName            = "log-sender"
-	deployerName             = "deployer"
-	authenticationworkerName = "authenticationworker"
-	storageprovisionerName   = "storage-provisioner-machine"
-	resumerName              = "resumer"
-	identityFileWriterName   = "identity-file-writer"
-	toolsversioncheckerName  = "tools-version-checker"
-	machineActionName        = "machine-actions"
+	deployerName             = "unit-agent-deployer"
+	authenticationWorkerName = "ssh-authkeys-updater"
+	storageProvisionerName   = "storage-provisioner"
+	resumerName              = "mgo-txn-resumer"
+	identityFileWriterName   = "ssh-identity-writer"
+	toolsVersionCheckerName  = "tools-version-checker"
+	apiConfigWatcherName     = "api-config-watcher"
+	machineActionName        = "machine-action-runner"
+	hostKeyReporterName      = "host-key-reporter"
 )

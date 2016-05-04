@@ -772,9 +772,19 @@ func (*suite) TestSetAPIHostPorts(c *gc.C) {
 	c.Assert(addrs, gc.DeepEquals, []string{
 		"0.1.0.1:1111",
 		"0.1.0.2:1111",
+		"host.com:1111",
 		"0.2.0.1:2222",
 		"0.2.0.2:2222",
 		"0.4.0.1:4444",
 		"elsewhere.net:4444",
 	})
+}
+
+func (*suite) TestSetCACert(c *gc.C) {
+	conf, err := agent.NewAgentConfig(attributeParams)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(conf.CACert(), gc.Equals, "ca cert")
+
+	conf.SetCACert("new ca cert")
+	c.Assert(conf.CACert(), gc.Equals, "new ca cert")
 }

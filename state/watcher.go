@@ -2373,10 +2373,10 @@ type openedPortsWatcher struct {
 
 var _ Watcher = (*openedPortsWatcher)(nil)
 
-// WatchOpenedPorts starts and returns a StringsWatcher notifying of
-// changes to the openedPorts collection. Reported changes have the
-// following format: "<machine-id>:<network-name>", i.e.
-// "0:juju-public".
+// WatchOpenedPorts starts and returns a StringsWatcher notifying of changes to
+// the openedPorts collection. Reported changes have the following format:
+// "<machine-id>:[<subnet-CIDR>]", i.e. "0:10.20.0.0/16" or "1:" (empty subnet
+// ID is allowed for backwards-compatibility).
 func (st *State) WatchOpenedPorts() StringsWatcher {
 	return newOpenedPortsWatcher(st)
 }
@@ -2402,14 +2402,15 @@ func (w *openedPortsWatcher) Changes() <-chan []string {
 }
 
 // transformId converts a global key for a ports document (e.g.
-// "m#42#n#juju-public") into a colon-separated string with the
-// machine id and network name (e.g. "42:juju-public").
-func (w *openedPortsWatcher) transformId(globalKey string) (string, error) {
-	parts, err := extractPortsIdParts(globalKey)
+// "m#42#0.1.2.0/24") into a colon-separated string with the machine and subnet
+// IDs (e.g. "42:0.1.2.0/24"). Subnet ID (a.k.a. CIDR) can be empty for
+// backwards-compatibility.
+func (w *openedPortsWatcher) transformID(globalKey string) (string, error) {
+	parts, err := extractPortsIDParts(globalKey)
 	if err != nil {
 		return "", errors.Trace(err)
 	}
-	return fmt.Sprintf("%s:%s", parts[machineIdPart], parts[networkNamePart]), nil
+	return fmt.Sprintf("%s:%s", parts[machineIDPart], parts[subnetIDPart]), nil
 }
 
 func (w *openedPortsWatcher) initial() (set.Strings, error) {
@@ -2427,10 +2428,10 @@ func (w *openedPortsWatcher) initial() (set.Strings, error) {
 		if doc.TxnRevno != -1 {
 			w.known[id] = doc.TxnRevno
 		}
-		if changeId, err := w.transformId(id); err != nil {
+		if changeID, err := w.transformID(id); err != nil {
 			logger.Errorf(err.Error())
 		} else {
-			portDocs.Add(changeId)
+			portDocs.Add(changeID)
 		}
 	}
 	return portDocs, errors.Trace(iter.Close())
@@ -2477,11 +2478,11 @@ func (w *openedPortsWatcher) merge(ids set.Strings, change watcher.Change) error
 	}
 	if change.Revno == -1 {
 		delete(w.known, localID)
-		if changeId, err := w.transformId(localID); err != nil {
+		if changeID, err := w.transformID(localID); err != nil {
 			logger.Errorf(err.Error())
 		} else {
 			// Report the removed id.
-			ids.Add(changeId)
+			ids.Add(changeID)
 		}
 		return nil
 	}
@@ -2494,11 +2495,11 @@ func (w *openedPortsWatcher) merge(ids set.Strings, change watcher.Change) error
 	knownRevno, isKnown := w.known[localID]
 	w.known[localID] = currentRevno
 	if !isKnown || currentRevno > knownRevno {
-		if changeId, err := w.transformId(localID); err != nil {
+		if changeID, err := w.transformID(localID); err != nil {
 			logger.Errorf(err.Error())
 		} else {
 			// Report the unknown-so-far id.
-			ids.Add(changeId)
+			ids.Add(changeID)
 		}
 	}
 	return nil
@@ -2654,7 +2655,7 @@ type migrationActiveWatcher struct {
 func newMigrationActiveWatcher(st *State) NotifyWatcher {
 	w := &migrationActiveWatcher{
 		commonWatcher: commonWatcher{st: st},
-		collName:      modelMigrationsActiveC,
+		collName:      migrationsActiveC,
 		sink:          make(chan struct{}),
 	}
 	go func() {
@@ -2734,7 +2735,7 @@ type migrationStatusWatcher struct {
 func newMigrationStatusWatcher(st *State) NotifyWatcher {
 	w := &migrationStatusWatcher{
 		commonWatcher: commonWatcher{st: st},
-		collName:      modelMigrationStatusC,
+		collName:      migrationsStatusC,
 		sink:          make(chan struct{}),
 	}
 	go func() {
@@ -2753,7 +2754,7 @@ func (w *migrationStatusWatcher) Changes() <-chan struct{} {
 func (w *migrationStatusWatcher) loop() error {
 	in := make(chan watcher.Change)
 
-	// Watch the entire modelMigrationStatusC collection for migration
+	// Watch the entire migrationsStatusC collection for migration
 	// status updates related to the State's model. This is more
 	// efficient and simpler than tracking the current active
 	// migration (and changing watchers when one migration finishes
@@ -2770,18 +2771,7 @@ func (w *migrationStatusWatcher) loop() error {
 	w.st.watcher.WatchCollectionWithFilter(w.collName, in, filter)
 	defer w.st.watcher.UnwatchCollection(w.collName, in)
 
-	var out chan<- struct{}
-
-	// If there is a migration record for the model - active or not -
-	// send an initial event.
-	if _, err := w.st.GetModelMigration(); errors.IsNotFound(err) {
-		// Nothing to report.
-	} else if err != nil {
-		return errors.Trace(err)
-	} else {
-		out = w.sink
-	}
-
+	out := w.sink // out set so that initial event is sent.
 	for {
 		select {
 		case <-w.tomb.Dying():

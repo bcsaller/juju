@@ -154,7 +154,7 @@ func buildMAASVolumeParameters(args []storage.VolumeParams, cons constraints.Val
 
 // volumes creates the storage volumes and attachments
 // corresponding to the volume info associated with a MAAS node.
-func (mi *maasInstance) volumes(
+func (mi *maas1Instance) volumes(
 	mTag names.MachineTag, requestedVolumes []names.VolumeTag,
 ) (
 	[]storage.Volume, []storage.VolumeAttachment, error,
@@ -269,6 +269,61 @@ func (mi *maasInstance) volumes(
 			},
 		}
 		attachments = append(attachments, attachment)
+	}
+	return volumes, attachments, nil
+}
+
+func (mi *maas2Instance) volumes(
+	mTag names.MachineTag, requestedVolumes []names.VolumeTag,
+) (
+	[]storage.Volume, []storage.VolumeAttachment, error,
+) {
+	if mi.constraintMatches.Storage == nil {
+		return nil, nil, errors.NotFoundf("constraint storage mapping")
+	}
+
+	var volumes []storage.Volume
+	var attachments []storage.VolumeAttachment
+
+	// Set up a collection of volumes tags which
+	// we specifically asked for when the node was acquired.
+	validVolumes := set.NewStrings()
+	for _, v := range requestedVolumes {
+		validVolumes.Add(v.Id())
+	}
+
+	for label, devices := range mi.constraintMatches.Storage {
+		// We don't explicitly allow the root volume to be specified yet.
+		if label == rootDiskLabel {
+			continue
+		}
+		// We only care about the volumes we specifically asked for.
+		if !validVolumes.Contains(label) {
+			continue
+		}
+
+		for _, device := range devices {
+			volumeTag := names.NewVolumeTag(label)
+			vol := storage.Volume{
+				volumeTag,
+				storage.VolumeInfo{
+					VolumeId:   volumeTag.String(),
+					Size:       uint64(device.Size() / humanize.MiByte),
+					Persistent: false,
+				},
+			}
+			volumes = append(volumes, vol)
+
+			attachment := storage.VolumeAttachment{
+				volumeTag,
+				mTag,
+				storage.VolumeAttachmentInfo{
+					DeviceLink: device.Path(),
+					ReadOnly:   false,
+				},
+			}
+			attachments = append(attachments, attachment)
+		}
 	}
 	return volumes, attachments, nil
 }

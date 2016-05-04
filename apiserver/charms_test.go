@@ -111,9 +111,9 @@ func (s *charmsSuite) TestPOSTRequiresAuth(c *gc.C) {
 	s.assertErrorResponse(c, resp, http.StatusUnauthorized, "no credentials provided")
 }
 
-func (s *charmsSuite) TestGETDoesNotRequireAuth(c *gc.C) {
+func (s *charmsSuite) TestGETRequiresAuth(c *gc.C) {
 	resp := s.sendRequest(c, httpRequestParams{method: "GET", url: s.charmsURI(c, "")})
-	s.assertErrorResponse(c, resp, http.StatusBadRequest, "expected url=CharmURL query argument")
+	s.assertErrorResponse(c, resp, http.StatusUnauthorized, "no credentials provided")
 }
 
 func (s *charmsSuite) TestRequiresPOSTorGET(c *gc.C) {
@@ -476,7 +476,7 @@ func (s *charmsSuite) TestGetReturnsManifest(c *gc.C) {
 
 func (s *charmsSuite) TestGetUsesCache(c *gc.C) {
 	// Add a fake charm archive in the cache directory.
-	cacheDir := filepath.Join(s.DataDir(), "charm-get-cache")
+	cacheDir := filepath.Join(s.DataDir(), "charm-get-cache", s.State.ModelUUID())
 	err := os.MkdirAll(cacheDir, 0755)
 	c.Assert(err, jc.ErrorIsNil)
 

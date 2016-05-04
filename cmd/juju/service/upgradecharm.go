@@ -20,6 +20,7 @@ import (
 
 	"github.com/juju/juju/api"
 	apiservice "github.com/juju/juju/api/service"
+	"github.com/juju/juju/charmstore"
 	"github.com/juju/juju/cmd/juju/block"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/resource"
@@ -37,7 +38,6 @@ type upgradeCharmCommand struct {
 	ServiceName string
 	ForceUnits  bool
 	ForceSeries bool
-	RepoPath    string // defaults to JUJU_REPOSITORY
 	SwitchURL   string
 	CharmPath   string
 	Revision    int // defaults to -1 (latest)
@@ -54,19 +54,14 @@ When no flags are set, the service's charm will be upgraded to the latest
 revision available in the repository from which it was originally deployed. An
 explicit revision can be chosen with the --revision flag.
 
-If the charm was not originally deployed from a repository, but from a path,
-then a path will need to be supplied to allow an updated copy of the charm
+A path will need to be supplied to allow an updated copy of the charm
 to be located.
 
-If the charm came from a local repository, its path will be assumed to be
-$JUJU_REPOSITORY unless overridden by --repository. Note that deploying from
-a local repository is deprecated in favour of deploying from a path.
-
-Deploying from a path or local repository is intended to suit the workflow of a charm
-author working on a single client machine; use of this deployment method from
-multiple clients is not supported and may lead to confusing behaviour. Each
-local charm gets uploaded with the revision specified in the charm, if possible,
-otherwise it gets a unique revision (highest in state + 1).
+Deploying from a path is intended to suit the workflow of a charm author working
+on a single client machine; use of this deployment method from multiple clients
+is not supported and may lead to confusing behaviour. Each local charm gets
+uploaded with the revision specified in the charm, if possible, otherwise it
+gets a unique revision (highest in state + 1).
 
 When deploying from a path, the --path flag is used to specify the location from
 which to load the updated charm. Note that the directory containing the charm must
@@ -86,9 +81,9 @@ upgrade is disallowed unless the --force-series flag is used. This option should
 used with caution since using a charm on a machine running an unsupported series may
 cause unexpected behavior.
 
-When using a local repository, the --switch flag allows you to replace the charm
-with an entirely different one. The new charm's URL and revision are inferred as
-they would be when running a deploy command.
+The --switch flag allows you to replace the charm with an entirely different one.
+The new charm's URL and revision are inferred as they would be when running a
+deploy command.
 
 Please note that --switch is dangerous, because juju only has limited
 information with which to determine compatibility; the operation will succeed,
@@ -128,7 +123,6 @@ func (c *upgradeCharmCommand) SetFlags(f *gnuflag.FlagSet) {
 	f.BoolVar(&c.ForceUnits, "force-units", false, "upgrade all units immediately, even if in error state")
 	f.StringVar((*string)(&c.Channel), "channel", "", "channel to use when getting the charm or bundle from the charm store")
 	f.BoolVar(&c.ForceSeries, "force-series", false, "upgrade even if series of deployed services are not supported by the new charm")
-	f.StringVar(&c.RepoPath, "repository", os.Getenv("JUJU_REPOSITORY"), "local charm repository path")
 	f.StringVar(&c.SwitchURL, "switch", "", "crossgrade to a different charm")
 	f.StringVar(&c.CharmPath, "path", "", "upgrade to a charm located at path")
 	f.IntVar(&c.Revision, "revision", -1, "explicit revision of current charm")
@@ -191,6 +185,11 @@ func (c *upgradeCharmCommand) Run(ctx *cmd.Context) error {
 		newRef = c.CharmPath
 	}
 	if c.SwitchURL == "" && c.CharmPath == "" {
+		// If the charm we are upgrading is local, then we must
+		// specify a path or switch url to upgrade with.
+		if oldURL.Schema == "local" {
+			return errors.New("upgrading a local charm requires either --path or --switch")
+		}
 		// No new URL specified, but revision might have been.
 		newRef = oldURL.WithRevision(c.Revision).String()
 	}
@@ -205,21 +204,21 @@ func (c *upgradeCharmCommand) Run(ctx *cmd.Context) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	resolver := newCharmURLResolver(conf, csClient, ctx.AbsPath(c.RepoPath))
-	addedURL, csMac, err := c.addCharm(oldURL, newRef, client, resolver)
+	resolver := newCharmURLResolver(conf, csClient)
+	chID, csMac, err := c.addCharm(oldURL, newRef, client, resolver)
 	if err != nil {
 		return block.ProcessBlockedError(err, block.BlockChange)
 	}
-	ctx.Infof("Added charm %q to the model.", addedURL)
+	ctx.Infof("Added charm %q to the model.", chID.URL)
 
-	ids, err := c.upgradeResources(client, addedURL, csMac)
+	ids, err := c.upgradeResources(client, chID, csMac)
 	if err != nil {
 		return errors.Trace(err)
 	}
 
 	cfg := apiservice.SetCharmConfig{
 		ServiceName: c.ServiceName,
-		CharmUrl:    addedURL.String(),
+		CharmID:     chID,
 		ForceSeries: c.ForceSeries,
 		ForceUnits:  c.ForceUnits,
 		ResourceIDs: ids,
@@ -231,8 +230,8 @@ func (c *upgradeCharmCommand) Run(ctx *cmd.Context) error {
 // upgradeResources pushes metadata up to the server for each resource defined
 // in the new charm's metadata and returns a map of resource names to pending
 // IDs to include in the upgrage-charm call.
-func (c *upgradeCharmCommand) upgradeResources(client *api.Client, cURL *charm.URL, csMac *macaroon.Macaroon) (map[string]string, error) {
-	filtered, err := getUpgradeResources(c, c.ServiceName, cURL, client, c.Resources)
+func (c *upgradeCharmCommand) upgradeResources(client *api.Client, chID charmstore.CharmID, csMac *macaroon.Macaroon) (map[string]string, error) {
+	filtered, err := getUpgradeResources(c, c.ServiceName, chID.URL, client, c.Resources)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -242,7 +241,7 @@ func (c *upgradeCharmCommand) upgradeResources(client *api.Client, cURL *charm.U
 
 	// Note: the validity of user-supplied resources to be uploaded will be
 	// checked further down the stack.
-	return handleResources(c, c.Resources, c.ServiceName, cURL, csMac, filtered)
+	return handleResources(c, c.Resources, c.ServiceName, chID, csMac, filtered)
 }
 
 // TODO(ericsnow) Move these helpers into handleResources()?
@@ -330,37 +329,40 @@ func (c *upgradeCharmCommand) addCharm(
 	charmRef string,
 	client *api.Client,
 	resolver *charmURLResolver,
-) (*charm.URL, *macaroon.Macaroon, error) {
+) (charmstore.CharmID, *macaroon.Macaroon, error) {
+	var id charmstore.CharmID
 	// Charm may have been supplied via a path reference.
 	ch, newURL, err := charmrepo.NewCharmAtPathForceSeries(charmRef, oldURL.Series, c.ForceSeries)
 	if err == nil {
 		_, newName := filepath.Split(charmRef)
 		if newName != oldURL.Name {
-			return nil, nil, fmt.Errorf("cannot upgrade %q to %q", oldURL.Name, newName)
+			return id, nil, fmt.Errorf("cannot upgrade %q to %q", oldURL.Name, newName)
 		}
 		addedURL, err := client.AddLocalCharm(newURL, ch)
-		return addedURL, nil, err
+		id.URL = addedURL
+		return id, nil, err
 	}
 	if _, ok := err.(*charmrepo.NotFoundError); ok {
-		return nil, nil, errors.Errorf("no charm found at %q", charmRef)
+		return id, nil, errors.Errorf("no charm found at %q", charmRef)
 	}
 	// If we get a "not exists" or invalid path error then we attempt to interpret
 	// the supplied charm reference as a URL below, otherwise we return the error.
 	if err != os.ErrNotExist && !charmrepo.IsInvalidPathError(err) {
-		return nil, nil, err
+		return id, nil, err
 	}
 
 	// Charm has been supplied as a URL so we resolve and deploy using the store.
-	newURL, supportedSeries, repo, err := resolver.resolve(charmRef)
+	newURL, channel, supportedSeries, store, err := resolver.resolve(charmRef)
 	if err != nil {
-		return nil, nil, errors.Trace(err)
+		return id, nil, errors.Trace(err)
 	}
+	id.Channel = channel
 	if !c.ForceSeries && oldURL.Series != "" && newURL.Series == "" && !isSeriesSupported(oldURL.Series, supportedSeries) {
 		series := []string{"no series"}
 		if len(supportedSeries) > 0 {
 			series = supportedSeries
 		}
-		return nil, nil, errors.Errorf(
+		return id, nil, errors.Errorf(
 			"cannot upgrade from single series %q charm to a charm supporting %q. Use --force-series to override.",
 			oldURL.Series, series,
 		)
@@ -370,15 +372,18 @@ func (c *upgradeCharmCommand) addCharm(
 	if *newURL == *oldURL {
 		newRef, _ := charm.ParseURL(charmRef)
 		if newRef.Revision != -1 {
-			return nil, nil, fmt.Errorf("already running specified charm %q", newURL)
+			return id, nil, fmt.Errorf("already running specified charm %q", newURL)
 		}
-		if newURL.Schema == "cs" {
-			// No point in trying to upgrade a charm store charm when
-			// we just determined that's the latest revision
-			// available.
-			return nil, nil, fmt.Errorf("already running latest charm %q", newURL)
-		}
+		// No point in trying to upgrade a charm store charm when
+		// we just determined that's the latest revision
+		// available.
+		return id, nil, fmt.Errorf("already running latest charm %q", newURL)
 	}
 
-	return addCharmFromURL(client, newURL, repo)
+	curl, csMac, err := addCharmFromURL(client, newURL, channel, store.Client())
+	if err != nil {
+		return id, nil, errors.Trace(err)
+	}
+	id.URL = curl
+	return id, csMac, nil
 }

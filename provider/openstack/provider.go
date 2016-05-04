@@ -8,6 +8,7 @@ package openstack
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,8 @@ import (
 	"github.com/juju/names"
 	"github.com/juju/utils"
 	"github.com/juju/utils/arch"
+	"github.com/juju/version"
+	"gopkg.in/goose.v1/cinder"
 	"gopkg.in/goose.v1/client"
 	gooseerrors "gopkg.in/goose.v1/errors"
 	"gopkg.in/goose.v1/identity"
@@ -350,7 +353,6 @@ func convertNovaAddresses(publicIP string, addresses map[string][]nova.IPAddress
 	var machineAddresses []network.Address
 	if publicIP != "" {
 		publicAddr := network.NewScopedAddress(publicIP, network.ScopePublic)
-		publicAddr.NetworkName = "public"
 		machineAddresses = append(machineAddresses, publicAddr)
 	}
 	// TODO(gz) Network ordering may be significant but is not preserved by
@@ -372,7 +374,6 @@ func convertNovaAddresses(publicIP string, addresses map[string][]nova.IPAddress
 				addrtype = network.IPv6Address
 			}
 			machineAddr := network.NewScopedAddress(address.Address, networkScope)
-			machineAddr.NetworkName = netName
 			if machineAddr.Type != addrtype {
 				logger.Warningf("derived address type %v, nova reports %v", machineAddr.Type, addrtype)
 			}
@@ -573,7 +574,7 @@ func (e *Environ) Bootstrap(ctx environs.BootstrapContext, args environs.Bootstr
 }
 
 func (e *Environ) ControllerInstances() ([]instance.Id, error) {
-	// Find all instances tagged with tags.JujuController.
+	// Find all instances tagged with tags.JujuIsController.
 	instances, err := e.AllInstances()
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -581,7 +582,7 @@ func (e *Environ) ControllerInstances() ([]instance.Id, error) {
 	ids := make([]instance.Id, 0, 1)
 	for _, instance := range instances {
 		detail := instance.(*openstackInstance).getServerDetail()
-		if detail.Metadata[tags.JujuController] == "true" {
+		if detail.Metadata[tags.JujuIsController] == "true" {
 			ids = append(ids, instance.Id())
 		}
 	}
@@ -595,33 +596,8 @@ func (e *Environ) Config() *config.Config {
 	return e.ecfg().Config
 }
 
-type newClientFunc func(*identity.Credentials, identity.AuthMode, *log.Logger) client.AuthenticatingClient
-
-func determineBestClient(
-	options identity.AuthOptions,
-	client client.AuthenticatingClient,
-	cred *identity.Credentials,
-	newClient newClientFunc,
-) client.AuthenticatingClient {
-	for _, option := range options {
-		if option.Mode != identity.AuthUserPassV3 {
-			continue
-		}
-		cred.URL = option.Endpoint
-		v3client := newClient(cred, identity.AuthUserPassV3, nil)
-		// V3 being advertised is not necessaritly a guarantee that it will
-		// work.
-		err := v3client.Authenticate()
-		if err == nil {
-			return v3client
-		}
-	}
-	return client
-
-}
-
-func authClient(ecfg *environConfig) client.AuthenticatingClient {
-	cred := &identity.Credentials{
+func newCredentials(ecfg *environConfig) (identity.Credentials, identity.AuthMode) {
+	cred := identity.Credentials{
 		User:       ecfg.username(),
 		Secrets:    ecfg.password(),
 		Region:     ecfg.region(),
@@ -644,27 +620,61 @@ func authClient(ecfg *environConfig) client.AuthenticatingClient {
 		cred.User = ecfg.accessKey()
 		cred.Secrets = ecfg.secretKey()
 	}
+
+	return cred, authMode
+}
+
+func determineBestClient(
+	options identity.AuthOptions,
+	client client.AuthenticatingClient,
+	cred identity.Credentials,
+	newClient func(*identity.Credentials, identity.AuthMode, *log.Logger) client.AuthenticatingClient,
+) client.AuthenticatingClient {
+	for _, option := range options {
+		if option.Mode != identity.AuthUserPassV3 {
+			continue
+		}
+		cred.URL = option.Endpoint
+		v3client := newClient(&cred, identity.AuthUserPassV3, nil)
+		// V3 being advertised is not necessaritly a guarantee that it will
+		// work.
+		err := v3client.Authenticate()
+		if err == nil {
+			return v3client
+		}
+	}
+	return client
+}
+
+func authClient(ecfg *environConfig) (client.AuthenticatingClient, error) {
+
+	identityClientVersion, err := identityClientVersion(ecfg.authURL())
+	if err != nil {
+		return nil, errors.Annotate(err, "cannot create a client")
+	}
+	cred, authMode := newCredentials(ecfg)
+
 	newClient := client.NewClient
-	if !ecfg.SSLHostnameVerification() {
+	if ecfg.SSLHostnameVerification() == false {
 		newClient = client.NewNonValidatingClient
 	}
-	client := newClient(cred, authMode, nil)
+	client := newClient(&cred, authMode, nil)
 
 	// before returning, lets make sure that we want to have AuthMode
 	// AuthUserPass instead of its V3 counterpart.
-	if authMode == identity.AuthUserPass {
+	if authMode == identity.AuthUserPass && (identityClientVersion == -1 || identityClientVersion == 3) {
 		options, err := client.IdentityAuthOptions()
 		if err != nil {
 			logger.Errorf("cannot determine available auth versions %v", err)
 		} else {
 			client = determineBestClient(options, client, cred, newClient)
 		}
-
 	}
+
 	// By default, the client requires "compute" and
 	// "object-store". Juju only requires "compute".
 	client.SetRequiredServiceTypes([]string{"compute"})
-	return client
+	return client, nil
 }
 
 var authenticateClient = func(e *Environ) error {
@@ -694,10 +704,31 @@ func (e *Environ) SetConfig(cfg *config.Config) error {
 	defer e.ecfgMutex.Unlock()
 	e.ecfgUnlocked = ecfg
 
-	e.client = authClient(ecfg)
-
+	client, err := authClient(ecfg)
+	if err != nil {
+		return errors.Annotate(err, "cannot set config")
+	}
+	e.client = client
 	e.novaUnlocked = nova.New(e.client)
 	return nil
+}
+
+func identityClientVersion(authURL string) (int, error) {
+	url, err := url.Parse(authURL)
+	if err != nil {
+		return -1, err
+	} else if url.Path == "" {
+		return -1, err
+	}
+	// The last part of the path should be the version #.
+	// Example: https://keystone.foo:443/v3/
+	logger.Debugf("authURL: %s", authURL)
+	versionNumStr := url.Path[2:]
+	if versionNumStr[len(versionNumStr)-1] == '/' {
+		versionNumStr = versionNumStr[:len(versionNumStr)-1]
+	}
+	major, _, err := version.ParseMajorMinor(versionNumStr)
+	return major, err
 }
 
 // getKeystoneImageSource is an imagemetadata.ImageDataSourceFunc that
@@ -877,10 +908,6 @@ func (e *Environ) StartInstance(args environs.StartInstanceParams) (*environs.St
 		}
 	}
 
-	if args.InstanceConfig.HasNetworks() {
-		return nil, errors.Errorf("starting instances with networks is not supported yet.")
-	}
-
 	series := args.Tools.OneSeries()
 	arches := args.Tools.Arches()
 	spec, err := findInstanceSpec(e, &instances.InstanceConstraint{
@@ -897,7 +924,9 @@ func (e *Environ) StartInstance(args environs.StartInstanceParams) (*environs.St
 		return nil, errors.Errorf("chosen architecture %v not present in %v", spec.Image.Arch, arches)
 	}
 
-	args.InstanceConfig.Tools = tools[0]
+	if err := args.InstanceConfig.SetTools(tools); err != nil {
+		return nil, errors.Trace(err)
+	}
 
 	if err := instancecfg.FinishInstanceConfig(args.InstanceConfig, e.Config()); err != nil {
 		return nil, err
@@ -1176,17 +1205,35 @@ func (e *Environ) Instances(ids []instance.Id) ([]instance.Instance, error) {
 	return insts, err
 }
 
-func (e *Environ) AllInstances() (insts []instance.Instance, err error) {
-	servers, err := e.nova().ListServersDetail(e.machinesFilter())
+// AllInstances returns all instances in this environment.
+func (e *Environ) AllInstances() ([]instance.Instance, error) {
+	filter := e.machinesFilter()
+	allInstances, err := e.allControllerManagedInstances(filter, e.ecfg().useFloatingIP())
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	modelUUID := e.Config().UUID()
+	matching := make([]instance.Instance, 0, len(allInstances))
+	for _, inst := range allInstances {
+		if inst.(*openstackInstance).serverDetail.Metadata[tags.JujuModel] != modelUUID {
+			continue
+		}
+		matching = append(matching, inst)
+	}
+	return matching, nil
+}
+
+// allControllerManagedInstances returns all instances managed by this
+// environment's controller, matching the optionally specified filter.
+func (e *Environ) allControllerManagedInstances(filter *nova.Filter, updateFloatingIPAddresses bool) ([]instance.Instance, error) {
+	servers, err := e.nova().ListServersDetail(filter)
 	if err != nil {
 		return nil, err
 	}
 	instsById := make(map[string]instance.Instance)
-	cfg := e.Config()
-	eUUID := cfg.UUID()
+	controllerUUID := e.Config().ControllerUUID()
 	for _, server := range servers {
-		modelUUID, ok := server.Metadata[tags.JujuModel]
-		if !ok || modelUUID != eUUID {
+		if server.Metadata[tags.JujuController] != controllerUUID {
 			continue
 		}
 		if e.isAliveServer(server) {
@@ -1195,17 +1242,16 @@ func (e *Environ) AllInstances() (insts []instance.Instance, err error) {
 			instsById[s.Id] = &openstackInstance{e: e, serverDetail: &s}
 		}
 	}
-
-	if e.ecfg().useFloatingIP() {
+	if updateFloatingIPAddresses {
 		if err := e.updateFloatingIPAddresses(instsById); err != nil {
 			return nil, err
 		}
 	}
-
+	insts := make([]instance.Instance, 0, len(instsById))
 	for _, inst := range instsById {
 		insts = append(insts, inst)
 	}
-	return insts, err
+	return insts, nil
 }
 
 func (e *Environ) Destroy() error {
@@ -1213,7 +1259,71 @@ func (e *Environ) Destroy() error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	return e.firewaller.DeleteGlobalGroups()
+	cfg := e.Config()
+	if cfg.UUID() == cfg.ControllerUUID() {
+		// In case any hosted environment hasn't been cleaned up yet,
+		// we also attempt to delete their resources when the controller
+		// environment is destroyed.
+		if err := e.destroyControllerManagedEnvirons(); err != nil {
+			return errors.Annotate(err, "destroying managed environs")
+		}
+	}
+	// Delete all security groups remaining in the model.
+	return e.firewaller.DeleteAllGroups()
+}
+
+// destroyControllerManagedEnvirons destroys all environments managed by this
+// environment's controller.
+func (e *Environ) destroyControllerManagedEnvirons() error {
+	// Terminate all instances managed by the controller.
+	insts, err := e.allControllerManagedInstances(nil, false)
+	if err != nil {
+		return errors.Annotate(err, "listing instances")
+	}
+	instIds := make([]instance.Id, len(insts))
+	for i, inst := range insts {
+		instIds[i] = inst.Id()
+	}
+	if err := e.terminateInstances(instIds); err != nil {
+		return errors.Annotate(err, "terminating instances")
+	}
+
+	// Delete all volumes managed by the controller.
+	cfg := e.Config()
+	storageAdapter, err := newOpenstackStorageAdapter(cfg)
+	if err == nil {
+		volIds, err := allControllerManagedVolumes(storageAdapter, cfg.ControllerUUID())
+		if err != nil {
+			return errors.Annotate(err, "listing volumes")
+		}
+		errs := destroyVolumes(storageAdapter, volIds)
+		for i, err := range errs {
+			if err == nil {
+				continue
+			}
+			return errors.Annotatef(err, "destroying volume %q", volIds[i], err)
+		}
+	} else if !errors.IsNotSupported(err) {
+		return errors.Trace(err)
+	}
+
+	// Security groups for hosted models are destroyed by the
+	// DeleteAllGroups method call from Destroy().
+	return nil
+}
+
+func allControllerManagedVolumes(storageAdapter openstackStorage, controllerUUID string) ([]string, error) {
+	volumes, err := listVolumes(storageAdapter, func(v *cinder.Volume) bool {
+		return v.Metadata[tags.JujuController] == controllerUUID
+	})
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	volIds := make([]string, len(volumes))
+	for i, v := range volumes {
+		volIds[i] = v.VolumeId
+	}
+	return volIds, nil
 }
 
 func resourceName(tag names.Tag, envName string) string {
@@ -1223,8 +1333,8 @@ func resourceName(tag names.Tag, envName string) string {
 // machinesFilter returns a nova.Filter matching all machines in the environment.
 func (e *Environ) machinesFilter() *nova.Filter {
 	filter := nova.NewFilter()
-	eUUID := e.Config().UUID()
-	filter.Set(nova.FilterServer, fmt.Sprintf("juju-%s-machine-\\d*", eUUID))
+	modelUUID := e.Config().UUID()
+	filter.Set(nova.FilterServer, fmt.Sprintf("juju-%s-machine-\\d*", modelUUID))
 	return filter
 }
 

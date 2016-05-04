@@ -6,7 +6,7 @@ package cloud
 // Generated code - do not edit.
 
 const fallbackPublicCloudInfo = `
-# DO NOT EDIT, will be overwritten, use “juju update-clouds” to refresh.
+# DO NOT EDIT, will be overwritten, use "juju update-clouds" to refresh.
 clouds:
   aws:
     type: ec2
@@ -129,17 +129,17 @@ clouds:
     auth-types: [ access-key, userpass ]
     endpoint: https://identity.api.rackspacecloud.com/v2.0
     regions:
-      DFW:
+      dfw:
         endpoint: https://identity.api.rackspacecloud.com/v2.0
-      ORD:
+      ord:
         endpoint: https://identity.api.rackspacecloud.com/v2.0
-      IAD:
+      iad:
         endpoint: https://identity.api.rackspacecloud.com/v2.0
-      LON:
+      lon:
         endpoint: https://lon.identity.api.rackspacecloud.com/v2.0
-      SYD:
+      syd:
         endpoint: https://identity.api.rackspacecloud.com/v2.0
-      HKG:
+      hkg:
         endpoint: https://identity.api.rackspacecloud.com/v2.0
   joyent:
     type: joyent

@@ -38,13 +38,17 @@ var (
 func MetadataStorage(e environs.Environ) envstorage.Storage {
 	ecfg := e.(*Environ).ecfg()
 	container := "juju-dist-test"
+	client, err := authClient(ecfg)
+	if err != nil {
+		panic(fmt.Errorf("cannot create %s container: %v", container, err))
+	}
 	metadataStorage := &openstackstorage{
 		containerName: container,
-		swift:         swift.New(authClient(ecfg)),
+		swift:         swift.New(client),
 	}
 
 	// Ensure the container exists.
-	err := metadataStorage.makeContainer(container, swift.PublicRead)
+	err = metadataStorage.makeContainer(container, swift.PublicRead)
 	if err != nil {
 		panic(fmt.Errorf("cannot create %s container: %v", container, err))
 	}
@@ -85,6 +89,8 @@ func NewCinderVolumeSource(s OpenstackStorage) storage.VolumeSource {
 	return &cinderVolumeSource{openstackStorage(s), envName, modelUUID}
 }
 
+// Include images for arches currently supported.  i386 is no longer
+// supported, so it can be excluded.
 var indexData = `
 		{
 		 "index": {
@@ -100,8 +106,10 @@ var indexData = `
 		   "datatype": "image-ids",
 		   "format": "products:1.0",
 		   "products": [
+			"com.ubuntu.cloud:server:16.04:s390x",
+			"com.ubuntu.cloud:server:14.04:s390x",
 			"com.ubuntu.cloud:server:14.04:amd64",
-			"com.ubuntu.cloud:server:14.04:i386",
+			"com.ubuntu.cloud:server:14.04:arm64",
 			"com.ubuntu.cloud:server:14.04:ppc64el",
 			"com.ubuntu.cloud:server:12.10:amd64",
 			"com.ubuntu.cloud:server:13.04:amd64"
@@ -155,10 +163,10 @@ var imagesData = `
        }
      }
    },
-   "com.ubuntu.cloud:server:14.04:i386": {
+   "com.ubuntu.cloud:server:14.04:arm64": {
      "release": "trusty",
      "version": "14.04",
-     "arch": "i386",
+     "arch": "arm64",
      "versions": {
        "20121111": {
          "items": {
@@ -169,7 +177,7 @@ var imagesData = `
              "id": "33"
            }
          },
-         "pubname": "ubuntu-trusty-14.04-i386-server-20121111",
+         "pubname": "ubuntu-trusty-14.04-arm64-server-20121111",
          "label": "release"
        }
      }
@@ -239,6 +247,56 @@ var imagesData = `
            }
          },
          "pubname": "ubuntu-raring-13.04-amd64-server-20121218",
+         "label": "release"
+       }
+     }
+   },
+   "com.ubuntu.cloud:server:14.04:s390x": {
+     "release": "trusty",
+     "version": "14.04",
+     "arch": "s390x",
+     "versions": {
+       "20121218": {
+         "items": {
+           "inst5": {
+             "root_store": "ebs",
+             "virt": "pv",
+             "region": "some-region",
+             "id": "id-y"
+           },
+           "inst6": {
+             "root_store": "ebs",
+             "virt": "pv",
+             "region": "another-region",
+             "id": "id-z"
+           }
+         },
+         "pubname": "ubuntu-trusty-14.04-s390x-server-20121218",
+         "label": "release"
+       }
+     }
+   },
+   "com.ubuntu.cloud:server:16.04:s390x": {
+     "release": "xenial",
+     "version": "16.04",
+     "arch": "s390x",
+     "versions": {
+       "20121218": {
+         "items": {
+           "inst5": {
+             "root_store": "ebs",
+             "virt": "pv",
+             "region": "some-region",
+             "id": "id-y"
+           },
+           "inst6": {
+             "root_store": "ebs",
+             "virt": "pv",
+             "region": "another-region",
+             "id": "id-z"
+           }
+         },
+         "pubname": "ubuntu-xenial-16.04-s390x-server-20121218",
          "label": "release"
        }
      }

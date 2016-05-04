@@ -101,7 +101,7 @@ iface {{.InterfaceName}} inet manual{{if .DNSServers}}
   down ip route del default via {{.GatewayAddress.Value}} || true{{end}}
 {{end}}`
 
-var networkInterfacesFile = "/etc/network/interfaces"
+var networkInterfacesFile = "/etc/network/interfaces.d/00-juju.cfg"
 
 // GenerateNetworkConfig renders a network config for one or more
 // network interfaces, using the given non-nil networkConfig
@@ -294,7 +294,7 @@ func shutdownInitCommands(initSystem, series string) ([]string, error) {
 	desc := "juju shutdown job"
 
 	execStart := shutdownCmd
-	if environs.AddressAllocationEnabled() {
+	if environs.AddressAllocationEnabled("") { // we only care the provider is not MAAS here.
 		// Only do the cleanup and replacement of /e/n/i when address
 		// allocation feature flag is enabled.
 		execStart = replaceNetConfCmd + removeCmd + shutdownCmd

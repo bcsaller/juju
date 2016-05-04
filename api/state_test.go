@@ -107,6 +107,7 @@ func (s *stateSuite) TestLoginMacaroon(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 	err = apistate.Login(tag, "", "", []macaroon.Slice{{mac}})
 	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(apistate.AuthTag(), gc.Equals, tag)
 }
 
 func (s *stateSuite) TestLoginMacaroonInvalidId(c *gc.C) {
@@ -115,7 +116,7 @@ func (s *stateSuite) TestLoginMacaroonInvalidId(c *gc.C) {
 	mac, err := macaroon.New([]byte("root-key"), "id", "juju")
 	c.Assert(err, jc.ErrorIsNil)
 	err = apistate.Login(tag, "", "", []macaroon.Slice{{mac}})
-	c.Assert(err, gc.ErrorMatches, "verification failed: macaroon not found in storage")
+	c.Assert(err, gc.ErrorMatches, "invalid entity name or password \\(unauthorized access\\)")
 }
 
 func (s *stateSuite) TestLoginMacaroonInvalidUser(c *gc.C) {
@@ -125,7 +126,7 @@ func (s *stateSuite) TestLoginMacaroonInvalidUser(c *gc.C) {
 	mac, err := usermanager.NewClient(s.APIState).CreateLocalLoginMacaroon(tag.(names.UserTag))
 	c.Assert(err, jc.ErrorIsNil)
 	err = apistate.Login(names.NewUserTag("bob@local"), "", "", []macaroon.Slice{{mac}})
-	c.Assert(err, gc.ErrorMatches, `verification failed: caveat "declared username admin@local" not satisfied: got username="bob@local", expected "admin@local"`)
+	c.Assert(err, gc.ErrorMatches, "invalid entity name or password \\(unauthorized access\\)")
 }
 
 func (s *stateSuite) TestLoginTracksFacadeVersions(c *gc.C) {
@@ -169,25 +170,31 @@ func (s *stateSuite) TestAPIHostPortsMovesConnectedValueFirst(c *gc.C) {
 	// the other addresses, but always see this one as well.
 	info := s.APIInfo(c)
 	// We intentionally set this to invalid values
-	badValue := network.HostPort{network.Address{
-		Value:       "0.1.2.3",
-		Type:        network.IPv4Address,
-		NetworkName: "",
-		Scope:       network.ScopeMachineLocal,
-	}, 1234}
+	badValue := network.HostPort{
+		Address: network.Address{
+			Value: "0.1.2.3",
+			Type:  network.IPv4Address,
+			Scope: network.ScopeMachineLocal,
+		},
+		Port: 1234,
+	}
 	badServer := []network.HostPort{badValue}
-	extraAddress := network.HostPort{network.Address{
-		Value:       "0.1.2.4",
-		Type:        network.IPv4Address,
-		NetworkName: "",
-		Scope:       network.ScopeMachineLocal,
-	}, 5678}
-	extraAddress2 := network.HostPort{network.Address{
-		Value:       "0.1.2.1",
-		Type:        network.IPv4Address,
-		NetworkName: "",
-		Scope:       network.ScopeMachineLocal,
-	}, 9012}
+	extraAddress := network.HostPort{
+		Address: network.Address{
+			Value: "0.1.2.4",
+			Type:  network.IPv4Address,
+			Scope: network.ScopeMachineLocal,
+		},
+		Port: 5678,
+	}
+	extraAddress2 := network.HostPort{
+		Address: network.Address{
+			Value: "0.1.2.1",
+			Type:  network.IPv4Address,
+			Scope: network.ScopeMachineLocal,
+		},
+		Port: 9012,
+	}
 	serverExtra := []network.HostPort{
 		extraAddress, goodAddress, extraAddress2,
 	}

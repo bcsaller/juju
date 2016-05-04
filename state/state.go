@@ -8,7 +8,6 @@ package state
 
 import (
 	"fmt"
-	"net"
 	"regexp"
 	"sort"
 	"strconv"
@@ -26,6 +25,7 @@ import (
 	"github.com/juju/utils/set"
 	"github.com/juju/version"
 	"gopkg.in/juju/charm.v6-unstable"
+	csparams "gopkg.in/juju/charmrepo.v2-unstable/csclient/params"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 	"gopkg.in/mgo.v2/txn"
@@ -125,6 +125,17 @@ func (st *State) IsController() bool {
 // this method. Otherwise, there is a race condition in which collections
 // could be added to during or after the running of this method.
 func (st *State) RemoveAllModelDocs() error {
+	return st.removeAllModelDocs(bson.D{{"life", Dead}})
+}
+
+// RemoveImportingModelDocs removes all documents from multi-model collections
+// for the current model. This method asserts that the model's migration mode
+// is "importing".
+func (st *State) RemoveImportingModelDocs() error {
+	return st.removeAllModelDocs(bson.D{{"migration-mode", MigrationModeImporting}})
+}
+
+func (st *State) removeAllModelDocs(modelAssertion bson.D) error {
 	env, err := st.Model()
 	if err != nil {
 		return errors.Trace(err)
@@ -136,11 +147,18 @@ func (st *State) RemoveAllModelDocs() error {
 		Id:     id,
 		Remove: true,
 	}, {
+		C:      modelEntityRefsC,
+		Id:     st.ModelUUID(),
+		Remove: true,
+	}, {
 		C:      modelsC,
 		Id:     st.ModelUUID(),
-		Assert: bson.D{{"life", Dead}},
+		Assert: modelAssertion,
 		Remove: true,
 	}}
+	if !st.IsController() {
+		ops = append(ops, decHostedModelCountOp())
+	}
 
 	// Add all per-model docs to the txn.
 	for name, info := range st.database.Schema() {
@@ -771,8 +789,6 @@ func (st *State) FindEntity(tag names.Tag) (Entity, error) {
 		return env, nil
 	case names.RelationTag:
 		return st.KeyRelation(id)
-	case names.NetworkTag:
-		return st.Network(id)
 	case names.IPAddressTag:
 		return st.IPAddressByTag(tag)
 	case names.ActionTag:
@@ -822,9 +838,6 @@ func (st *State) tagToCollectionAndId(tag names.Tag) (string, interface{}, error
 		id = st.docID(id)
 	case names.ModelTag:
 		coll = modelsC
-	case names.NetworkTag:
-		coll = networksC
-		id = st.docID(id)
 	case names.ActionTag:
 		coll = actionsC
 		id = tag.Id()
@@ -891,7 +904,8 @@ func (st *State) AllCharms() ([]*Charm, error) {
 	var charms []*Charm
 	iter := charmsCollection.Find(nil).Iter()
 	for iter.Next(&cdoc) {
-		charms = append(charms, newCharm(st, &cdoc))
+		ch := newCharm(st, &cdoc)
+		charms = append(charms, ch)
 	}
 	return charms, errors.Trace(iter.Close())
 }
@@ -1166,7 +1180,7 @@ type AddServiceArgs struct {
 	Series           string
 	Owner            string
 	Charm            *Charm
-	Networks         []string
+	Channel          csparams.Channel
 	Storage          map[string]StorageConstraints
 	EndpointBindings map[string]string
 	Settings         charm.Settings
@@ -1202,11 +1216,8 @@ func (st *State) AddService(args AddServiceArgs) (service *Service, err error) {
 	} else if exists {
 		return nil, errors.Errorf("service already exists")
 	}
-	env, err := st.Model()
-	if err != nil {
+	if err := checkModelActive(st); err != nil {
 		return nil, errors.Trace(err)
-	} else if env.Life() != Alive {
-		return nil, errors.Errorf("model is no longer alive")
 	}
 	if _, err := st.ModelUser(ownerTag); err != nil {
 		return nil, errors.Trace(err)
@@ -1306,10 +1317,11 @@ func (st *State) AddService(args AddServiceArgs) (service *Service, err error) {
 	svcDoc := &serviceDoc{
 		DocID:         serviceID,
 		Name:          args.Name,
-		ModelUUID:     env.UUID(),
+		ModelUUID:     st.ModelUUID(),
 		Series:        args.Series,
 		Subordinate:   args.Charm.Meta().Subordinate,
 		CharmURL:      args.Charm.URL(),
+		Channel:       string(args.Channel),
 		RelationCount: len(peers),
 		Life:          Alive,
 		OwnerTag:      args.Owner,
@@ -1344,7 +1356,7 @@ func (st *State) AddService(args AddServiceArgs) (service *Service, err error) {
 	// so we add it here.
 	ops := append(
 		[]txn.Op{
-			env.assertAliveOp(),
+			assertModelActiveOp(st.ModelUUID()),
 			endpointBindingsOp,
 		},
 		addServiceOps(st, addServiceOpsArgs{
@@ -1396,7 +1408,7 @@ func (st *State) AddService(args AddServiceArgs) (service *Service, err error) {
 	probablyUpdateStatusHistory(st, svc.globalKey(), statusDoc)
 
 	if err := st.runTransaction(ops); err == txn.ErrAborted {
-		if err := checkModeLife(st); err != nil {
+		if err := checkModelActive(st); err != nil {
 			return nil, errors.Trace(err)
 		}
 		return nil, errors.Errorf("service already exists")
@@ -1484,31 +1496,22 @@ func (st *State) assignStagedUnit(a UnitAssignment) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	svc, err := u.Service()
-	if err != nil {
-		return errors.Trace(err)
-	}
-	networks, err := svc.Networks()
-	if err != nil {
-		return errors.Trace(err)
-	}
 	if a.Scope == "" && a.Directive == "" {
 		return errors.Trace(st.AssignUnit(u, AssignCleanEmpty))
 	}
 
 	placement := &instance.Placement{Scope: a.Scope, Directive: a.Directive}
 
-	// units always have the same networks as their service.
-	return errors.Trace(st.AssignUnitWithPlacement(u, placement, networks))
+	return errors.Trace(st.AssignUnitWithPlacement(u, placement))
 }
 
 // AssignUnitWithPlacement chooses a machine using the given placement directive
 // and then assigns the unit to it.
-func (st *State) AssignUnitWithPlacement(unit *Unit, placement *instance.Placement, networks []string) error {
+func (st *State) AssignUnitWithPlacement(unit *Unit, placement *instance.Placement) error {
 	// TODO(natefinch) this should be done as a single transaction, not two.
 	// Mark https://launchpad.net/bugs/1506994 fixed when done.
 
-	m, err := st.addMachineWithPlacement(unit, placement, networks)
+	m, err := st.addMachineWithPlacement(unit, placement)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -1562,7 +1565,7 @@ func (st *State) parsePlacement(placement *instance.Placement) (*placementData, 
 }
 
 // addMachineWithPlacement finds a machine that matches the given placement directive for the given unit.
-func (st *State) addMachineWithPlacement(unit *Unit, placement *instance.Placement, networks []string) (*Machine, error) {
+func (st *State) addMachineWithPlacement(unit *Unit, placement *instance.Placement) (*Machine, error) {
 	unitCons, err := unit.Constraints()
 	if err != nil {
 		return nil, err
@@ -1583,22 +1586,20 @@ func (st *State) addMachineWithPlacement(unit *Unit, placement *instance.Placeme
 	case containerPlacement:
 		// If a container is to be used, create it.
 		template := MachineTemplate{
-			Series:            unit.Series(),
-			Jobs:              []MachineJob{JobHostUnits},
-			Dirty:             true,
-			Constraints:       *unitCons,
-			RequestedNetworks: networks,
+			Series:      unit.Series(),
+			Jobs:        []MachineJob{JobHostUnits},
+			Dirty:       true,
+			Constraints: *unitCons,
 		}
 		return st.AddMachineInsideMachine(template, data.machineId, data.containerType)
 	case directivePlacement:
 		// If a placement directive is to be used, do that here.
 		template := MachineTemplate{
-			Series:            unit.Series(),
-			Jobs:              []MachineJob{JobHostUnits},
-			Dirty:             true,
-			Constraints:       *unitCons,
-			RequestedNetworks: networks,
-			Placement:         data.directive,
+			Series:      unit.Series(),
+			Jobs:        []MachineJob{JobHostUnits},
+			Dirty:       true,
+			Constraints: *unitCons,
+			Placement:   data.directive,
 		}
 		return st.AddOneMachine(template)
 	default:
@@ -1663,7 +1664,7 @@ func (st *State) AddSubnet(args SubnetInfo) (subnet *Subnet, err error) {
 		return nil, err
 	}
 	ops := []txn.Op{
-		assertModelAliveOp(st.ModelUUID()),
+		assertModelActiveOp(st.ModelUUID()),
 		{
 			C:      subnetsC,
 			Id:     subnetID,
@@ -1675,7 +1676,7 @@ func (st *State) AddSubnet(args SubnetInfo) (subnet *Subnet, err error) {
 	err = st.runTransaction(ops)
 	switch err {
 	case txn.ErrAborted:
-		if err := checkModeLife(st); err != nil {
+		if err := checkModelActive(st); err != nil {
 			return nil, errors.Trace(err)
 		}
 		if _, err = st.Subnet(args.CIDR); err == nil {
@@ -1727,97 +1728,6 @@ func (st *State) AllSubnets() (subnets []*Subnet, err error) {
 		subnets = append(subnets, &Subnet{st, doc})
 	}
 	return subnets, nil
-}
-
-// AddNetwork creates a new network with the given params. If a
-// network with the same name or provider id already exists in state,
-// an error satisfying errors.IsAlreadyExists is returned.
-func (st *State) AddNetwork(args NetworkInfo) (n *Network, err error) {
-	defer errors.DeferredAnnotatef(&err, "cannot add network %q", args.Name)
-	if args.CIDR != "" {
-		_, _, err := net.ParseCIDR(args.CIDR)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if args.Name == "" {
-		return nil, errors.Errorf("name must be not empty")
-	}
-	if !names.IsValidNetwork(args.Name) {
-		return nil, errors.Errorf("invalid name")
-	}
-	if args.ProviderId == "" {
-		return nil, errors.Errorf("provider id must be not empty")
-	}
-	if args.VLANTag < 0 || args.VLANTag > 4094 {
-		return nil, errors.Errorf("invalid VLAN tag %d: must be between 0 and 4094", args.VLANTag)
-	}
-	doc := st.newNetworkDoc(args)
-	ops := []txn.Op{
-		assertModelAliveOp(st.ModelUUID()),
-		{
-			C:      networksC,
-			Id:     doc.DocID,
-			Assert: txn.DocMissing,
-			Insert: doc,
-		},
-	}
-	err = st.runTransaction(ops)
-	switch err {
-	case txn.ErrAborted:
-		if err := checkModeLife(st); err != nil {
-			return nil, errors.Trace(err)
-		}
-		if _, err = st.Network(args.Name); err == nil {
-			return nil, errors.AlreadyExistsf("network %q", args.Name)
-		} else if err != nil {
-			return nil, errors.Trace(err)
-		}
-	case nil:
-		// We have a unique key restriction on the ProviderId field,
-		// which will cause the insert to fail if there is another
-		// record with the same provider id in the table. The txn
-		// logic does not report insertion errors, so we check that
-		// the record has actually been inserted correctly before
-		// reporting success.
-		if _, err = st.Network(args.Name); err != nil {
-			return nil, errors.AlreadyExistsf("network with provider id %q", args.ProviderId)
-		}
-		return newNetwork(st, doc), nil
-	}
-	return nil, errors.Trace(err)
-}
-
-// Network returns the network with the given name.
-func (st *State) Network(name string) (*Network, error) {
-	networks, closer := st.getCollection(networksC)
-	defer closer()
-
-	doc := &networkDoc{}
-	err := networks.FindId(name).One(doc)
-	if err == mgo.ErrNotFound {
-		return nil, errors.NotFoundf("network %q", name)
-	}
-	if err != nil {
-		return nil, errors.Annotatef(err, "cannot get network %q", name)
-	}
-	return newNetwork(st, doc), nil
-}
-
-// AllNetworks returns all known networks in the model.
-func (st *State) AllNetworks() (networks []*Network, err error) {
-	networksCollection, closer := st.getCollection(networksC)
-	defer closer()
-
-	docs := []networkDoc{}
-	err = networksCollection.Find(nil).All(&docs)
-	if err != nil {
-		return nil, errors.Annotatef(err, "cannot get all networks")
-	}
-	for _, doc := range docs {
-		networks = append(networks, newNetwork(st, &doc))
-	}
-	return networks, nil
 }
 
 // Service returns a service state by name.
@@ -2494,7 +2404,6 @@ var tagPrefix = map[byte]string{
 	'u': names.UnitTagKind + "-",
 	'e': names.ModelTagKind + "-",
 	'r': names.RelationTagKind + "-",
-	'n': names.NetworkTagKind + "-",
 }
 
 func tagForGlobalKey(key string) (string, bool) {

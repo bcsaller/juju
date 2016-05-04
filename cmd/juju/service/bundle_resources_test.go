@@ -24,22 +24,22 @@ func init() {
 }
 
 type ResourcesBundleSuite struct {
-	service.DeployRepoCharmStoreSuite
+	service.BundleDeployCharmStoreSuite
 }
 
 var _ = gc.Suite(&ResourcesBundleSuite{})
 
 func (s *ResourcesBundleSuite) TestDeployBundleResources(c *gc.C) {
-	testcharms.UploadCharm(c, s.Client, "trusty/starsay-42", "starsay")
+	testcharms.UploadCharm(c, s.Client(), "trusty/starsay-42", "starsay")
 	bundleMeta := `
         services:
             starsay:
                 charm: cs:starsay
                 num_units: 1
                 resources:
-                    store-resource: 3
-                    install-resource: 17
-                    upload-resource: 42
+                    store-resource: 0
+                    install-resource: 0
+                    upload-resource: 0
     `
 	output, err := s.DeployBundleYAML(c, bundleMeta)
 	c.Assert(err, jc.ErrorIsNil)
@@ -47,7 +47,7 @@ func (s *ResourcesBundleSuite) TestDeployBundleResources(c *gc.C) {
 	lines := strings.Split(output, "\n")
 	expectedLines := strings.Split(strings.TrimSpace(`
 added charm cs:trusty/starsay-42
-service starsay deployed (charm: cs:trusty/starsay-42)
+service starsay deployed (charm cs:trusty/starsay-42 with the charm series "trusty")
 added resource install-resource
 added resource store-resource
 added resource upload-resource
@@ -72,8 +72,10 @@ deployment of bundle "local:bundle/example-0" completed
 				Path:        "gotta-have-it.txt",
 				Description: "get things started",
 			},
-			Origin:   charmresource.OriginStore,
-			Revision: 17,
+			Origin:      charmresource.OriginStore,
+			Revision:    0,
+			Fingerprint: resourceHash("install-resource content"),
+			Size:        int64(len("install-resource content")),
 		},
 		ID:        "starsay/install-resource",
 		ServiceID: "starsay",
@@ -85,8 +87,10 @@ deployment of bundle "local:bundle/example-0" completed
 				Path:        "filename.tgz",
 				Description: "One line that is useful when operators need to push it.",
 			},
-			Origin:   charmresource.OriginStore,
-			Revision: 3,
+			Origin:      charmresource.OriginStore,
+			Fingerprint: resourceHash("store-resource content"),
+			Size:        int64(len("store-resource content")),
+			Revision:    0,
 		},
 		ID:        "starsay/store-resource",
 		ServiceID: "starsay",
@@ -98,8 +102,10 @@ deployment of bundle "local:bundle/example-0" completed
 				Path:        "somename.xml",
 				Description: "Who uses xml anymore?",
 			},
-			Origin:   charmresource.OriginStore,
-			Revision: 42,
+			Origin:      charmresource.OriginStore,
+			Fingerprint: resourceHash("upload-resource content"),
+			Size:        int64(len("upload-resource content")),
+			Revision:    0,
 		},
 		ID:        "starsay/upload-resource",
 		ServiceID: "starsay",

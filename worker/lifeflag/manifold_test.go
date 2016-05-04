@@ -11,6 +11,7 @@ import (
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api/base"
+	"github.com/juju/juju/cmd/jujud/agent/util"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/worker"
 	"github.com/juju/juju/worker/dependency"
@@ -43,9 +44,9 @@ func (*ManifoldSuite) TestFilter(c *gc.C) {
 func (*ManifoldSuite) TestOutputBadWorker(c *gc.C) {
 	manifold := lifeflag.Manifold(lifeflag.ManifoldConfig{})
 	worker := struct{ worker.Worker }{}
-	var flag dependency.Flag
+	var flag util.Flag
 	err := manifold.Output(worker, &flag)
-	c.Check(err, gc.ErrorMatches, "expected in to be a \\*Worker, got a .*")
+	c.Check(err, gc.ErrorMatches, "expected in to implement Flag; got a .*")
 }
 
 func (*ManifoldSuite) TestOutputBadTarget(c *gc.C) {
@@ -53,35 +54,35 @@ func (*ManifoldSuite) TestOutputBadTarget(c *gc.C) {
 	worker := &lifeflag.Worker{}
 	var flag interface{}
 	err := manifold.Output(worker, &flag)
-	c.Check(err, gc.ErrorMatches, "expected out to be a \\*dependency\\.Flag, got a .*")
+	c.Check(err, gc.ErrorMatches, "expected out to be a \\*Flag; got a .*")
 }
 
 func (*ManifoldSuite) TestOutputSuccess(c *gc.C) {
 	manifold := lifeflag.Manifold(lifeflag.ManifoldConfig{})
 	worker := &lifeflag.Worker{}
-	var flag dependency.Flag
+	var flag util.Flag
 	err := manifold.Output(worker, &flag)
 	c.Check(err, jc.ErrorIsNil)
 	c.Check(flag, gc.Equals, worker)
 }
 
 func (*ManifoldSuite) TestMissingAPICaller(c *gc.C) {
-	getResource := dt.StubGetResource(dt.StubResources{
-		"api-caller": dt.StubResource{Error: dependency.ErrMissing},
+	context := dt.StubContext(nil, map[string]interface{}{
+		"api-caller": dependency.ErrMissing,
 	})
 	manifold := lifeflag.Manifold(lifeflag.ManifoldConfig{
 		APICallerName: "api-caller",
 	})
 
-	worker, err := manifold.Start(getResource)
+	worker, err := manifold.Start(context)
 	c.Check(worker, gc.IsNil)
 	c.Check(errors.Cause(err), gc.Equals, dependency.ErrMissing)
 }
 
 func (*ManifoldSuite) TestNewFacadeError(c *gc.C) {
 	expect := struct{ base.APICaller }{}
-	getResource := dt.StubGetResource(dt.StubResources{
-		"api-caller": dt.StubResource{Output: expect},
+	context := dt.StubContext(nil, map[string]interface{}{
+		"api-caller": expect,
 	})
 	manifold := lifeflag.Manifold(lifeflag.ManifoldConfig{
 		APICallerName: "api-caller",
@@ -91,7 +92,7 @@ func (*ManifoldSuite) TestNewFacadeError(c *gc.C) {
 		},
 	})
 
-	worker, err := manifold.Start(getResource)
+	worker, err := manifold.Start(context)
 	c.Check(worker, gc.IsNil)
 	c.Check(err, gc.ErrorMatches, "splort")
 }
@@ -99,8 +100,8 @@ func (*ManifoldSuite) TestNewFacadeError(c *gc.C) {
 func (*ManifoldSuite) TestNewWorkerError(c *gc.C) {
 	expectFacade := struct{ lifeflag.Facade }{}
 	expectEntity := names.NewMachineTag("33")
-	getResource := dt.StubGetResource(dt.StubResources{
-		"api-caller": dt.StubResource{Output: struct{ base.APICaller }{}},
+	context := dt.StubContext(nil, map[string]interface{}{
+		"api-caller": struct{ base.APICaller }{},
 	})
 	manifold := lifeflag.Manifold(lifeflag.ManifoldConfig{
 		APICallerName: "api-caller",
@@ -117,15 +118,15 @@ func (*ManifoldSuite) TestNewWorkerError(c *gc.C) {
 		},
 	})
 
-	worker, err := manifold.Start(getResource)
+	worker, err := manifold.Start(context)
 	c.Check(worker, gc.IsNil)
 	c.Check(err, gc.ErrorMatches, "boof")
 }
 
 func (*ManifoldSuite) TestNewWorkerSuccess(c *gc.C) {
 	expectWorker := &struct{ worker.Worker }{}
-	getResource := dt.StubGetResource(dt.StubResources{
-		"api-caller": dt.StubResource{Output: struct{ base.APICaller }{}},
+	context := dt.StubContext(nil, map[string]interface{}{
+		"api-caller": struct{ base.APICaller }{},
 	})
 	manifold := lifeflag.Manifold(lifeflag.ManifoldConfig{
 		APICallerName: "api-caller",
@@ -137,7 +138,7 @@ func (*ManifoldSuite) TestNewWorkerSuccess(c *gc.C) {
 		},
 	})
 
-	worker, err := manifold.Start(getResource)
+	worker, err := manifold.Start(context)
 	c.Check(worker, gc.Equals, expectWorker)
 	c.Check(err, jc.ErrorIsNil)
 }

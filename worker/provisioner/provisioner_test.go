@@ -207,17 +207,17 @@ func (s *CommonProvisionerSuite) startUnknownInstance(c *gc.C, id string) instan
 }
 
 func (s *CommonProvisionerSuite) checkStartInstance(c *gc.C, m *state.Machine) instance.Instance {
-	return s.checkStartInstanceCustom(c, m, "pork", s.defaultConstraints, nil, nil, nil, nil, true, nil, true)
+	return s.checkStartInstanceCustom(c, m, "pork", s.defaultConstraints, nil, nil, nil, true, nil, true)
 }
 
 func (s *CommonProvisionerSuite) checkStartInstanceNoSecureConnection(c *gc.C, m *state.Machine) instance.Instance {
-	return s.checkStartInstanceCustom(c, m, "pork", s.defaultConstraints, nil, nil, nil, nil, false, nil, true)
+	return s.checkStartInstanceCustom(c, m, "pork", s.defaultConstraints, nil, nil, nil, false, nil, true)
 }
 
 func (s *CommonProvisionerSuite) checkStartInstanceCustom(
 	c *gc.C, m *state.Machine,
 	secret string, cons constraints.Value,
-	networks []string, networkInfo []network.InterfaceInfo,
+	networkInfo []network.InterfaceInfo,
 	subnetsToZones map[network.Id][]string,
 	volumes []storage.Volume,
 	secureServerConnection bool,
@@ -245,7 +245,6 @@ func (s *CommonProvisionerSuite) checkStartInstanceCustom(
 				c.Assert(nonceParts[1], jc.Satisfies, utils.IsValidUUIDString)
 				c.Assert(o.Secret, gc.Equals, secret)
 				c.Assert(o.SubnetsToZones, jc.DeepEquals, subnetsToZones)
-				c.Assert(o.Networks, jc.DeepEquals, networks)
 				c.Assert(o.NetworkInfo, jc.DeepEquals, networkInfo)
 				c.Assert(o.Volumes, jc.DeepEquals, volumes)
 				c.Assert(o.AgentEnvironment["SECURE_CONTROLLER_CONNECTION"], gc.Equals, strconv.FormatBool(secureServerConnection))
@@ -427,15 +426,15 @@ func (s *CommonProvisionerSuite) waitInstanceId(c *gc.C, m *state.Machine, expec
 func (s *CommonProvisionerSuite) newEnvironProvisioner(c *gc.C) provisioner.Provisioner {
 	machineTag := names.NewMachineTag("0")
 	agentConfig := s.AgentConfigForTag(c, machineTag)
-	getResource := dt.StubGetResource(dt.StubResources{
-		"agent":      dt.StubResource{Output: mockAgent{config: agentConfig}},
-		"api-caller": dt.StubResource{Output: s.st},
+	context := dt.StubContext(nil, map[string]interface{}{
+		"agent":      mockAgent{config: agentConfig},
+		"api-caller": s.st,
 	})
 	manifold := provisioner.Manifold(provisioner.ManifoldConfig{
 		AgentName:     "agent",
 		APICallerName: "api-caller",
 	})
-	untyped, err := manifold.Start(getResource)
+	untyped, err := manifold.Start(context)
 	c.Assert(err, jc.ErrorIsNil)
 	typed, ok := untyped.(provisioner.Provisioner)
 	c.Assert(ok, jc.IsTrue)
@@ -497,7 +496,7 @@ func (s *ProvisionerSuite) TestConstraints(c *gc.C) {
 	// Start a provisioner and check those constraints are used.
 	p := s.newEnvironProvisioner(c)
 	defer stop(c, p)
-	s.checkStartInstanceCustom(c, m, "pork", cons, nil, nil, nil, nil, false, nil, true)
+	s.checkStartInstanceCustom(c, m, "pork", cons, nil, nil, nil, false, nil, true)
 }
 
 func (s *ProvisionerSuite) TestPossibleTools(c *gc.C) {
@@ -541,7 +540,7 @@ func (s *ProvisionerSuite) TestPossibleTools(c *gc.C) {
 	defer stop(c, provisioner)
 	s.checkStartInstanceCustom(
 		c, machine, "pork", constraints.Value{},
-		nil, nil, nil, nil, false, expectedList, true,
+		nil, nil, nil, false, expectedList, true,
 	)
 }
 
@@ -983,7 +982,7 @@ func (s *ProvisionerSuite) TestProvisioningMachinesWithSpacesSuccess(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 	inst := s.checkStartInstanceCustom(
 		c, m, "pork", cons,
-		nil, nil,
+		nil,
 		expectedSubnetsToZones,
 		nil, false, nil, true,
 	)
@@ -1106,7 +1105,7 @@ func (s *ProvisionerSuite) TestProvisioningMachinesWithRequestedVolumes(c *gc.C)
 	c.Assert(err, jc.ErrorIsNil)
 	inst := s.checkStartInstanceCustom(
 		c, m, "pork", s.defaultConstraints,
-		nil, nil, nil,
+		nil, nil,
 		expectVolumeInfo, false,
 		nil, true,
 	)

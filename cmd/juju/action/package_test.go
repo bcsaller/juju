@@ -6,7 +6,6 @@ package action_test
 import (
 	"errors"
 	"io/ioutil"
-	"regexp"
 	"testing"
 	"time"
 
@@ -49,7 +48,6 @@ type BaseActionSuite struct {
 
 func (s *BaseActionSuite) SetUpTest(c *gc.C) {
 	s.FakeJujuXDGDataHomeSuite.SetUpTest(c)
-	s.command = action.NewSuperCommand()
 
 	s.modelFlags = []string{"-m", "--model"}
 
@@ -67,22 +65,6 @@ func (s *BaseActionSuite) patchAPIClient(client *fakeAPIClient) func() {
 			return client, nil
 		},
 	)
-}
-
-func (s *BaseActionSuite) checkHelp(c *gc.C, subcmd cmd.Command) {
-	ctx, err := coretesting.RunCommand(c, s.command, subcmd.Info().Name, "--help")
-	c.Assert(err, gc.IsNil)
-
-	expected := "(?sm).*^Usage: juju action " +
-		regexp.QuoteMeta(subcmd.Info().Name) +
-		` \[options\] ` + regexp.QuoteMeta(subcmd.Info().Args) + ".+"
-	c.Check(coretesting.Stdout(ctx), gc.Matches, expected)
-
-	expected = "(?sm).*^Summary:\n" + regexp.QuoteMeta(subcmd.Info().Purpose) + "$.*"
-	c.Check(coretesting.Stdout(ctx), gc.Matches, expected)
-
-	expected = "(?sm).*^Details:" + regexp.QuoteMeta(subcmd.Info().Doc) + "$.*"
-	c.Check(coretesting.Stdout(ctx), gc.Matches, expected)
 }
 
 var someCharmActions = &charm.Actions{
@@ -148,6 +130,7 @@ type fakeAPIClient struct {
 	enqueuedActions    params.Actions
 	actionsByReceivers []params.ActionsByReceiver
 	actionTagMatches   params.FindTagsResults
+	actionsByNames     params.ActionsByNames
 	charmActions       *charm.Actions
 	apiErr             error
 }
@@ -226,4 +209,8 @@ func (c *fakeAPIClient) Actions(args params.Entities) (params.ActionResults, err
 
 func (c *fakeAPIClient) FindActionTagsByPrefix(arg params.FindTags) (params.FindTagsResults, error) {
 	return c.actionTagMatches, c.apiErr
+}
+
+func (c *fakeAPIClient) FindActionsByNames(args params.FindActionsByNames) (params.ActionsByNames, error) {
+	return c.actionsByNames, c.apiErr
 }

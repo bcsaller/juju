@@ -226,16 +226,14 @@ func (s *loginSuite) TestLoginAddrs(c *gc.C) {
 		Type:  network.HostName,
 		Scope: network.ScopePublic,
 	}, {
-		Value:       "10.0.0.1",
-		Type:        network.IPv4Address,
-		NetworkName: "internal",
-		Scope:       network.ScopeCloudLocal,
+		Value: "10.0.0.1",
+		Type:  network.IPv4Address,
+		Scope: network.ScopeCloudLocal,
 	}}
 	server2Addresses := []network.Address{{
-		Value:       "::1",
-		Type:        network.IPv6Address,
-		NetworkName: "loopback",
-		Scope:       network.ScopeMachineLocal,
+		Value: "::1",
+		Type:  network.IPv6Address,
+		Scope: network.ScopeMachineLocal,
 	}}
 	stateAPIHostPorts := [][]network.HostPort{
 		network.AddressesWithPort(server1Addresses, 123),
@@ -849,7 +847,10 @@ func (s *macaroonLoginSuite) TestLoginToEnvironmentSuccess(c *gc.C) {
 	}
 	client, err := api.Open(s.APIInfo(c), api.DialOpts{})
 	c.Assert(err, jc.ErrorIsNil)
-	client.Close()
+	defer client.Close()
+
+	// The auth tag has been correctly returned by the server.
+	c.Assert(client.AuthTag(), gc.Equals, names.NewUserTag("test@somewhere"))
 }
 
 func (s *macaroonLoginSuite) TestFailedToObtainDischargeLogin(c *gc.C) {

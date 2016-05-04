@@ -893,9 +893,7 @@ func (a *fakeUpgradeJujuAPI) FindTools(majorVersion, minorVersion int, series, a
 	}, nil
 }
 
-func (a *fakeUpgradeJujuAPI) UploadTools(r io.ReadSeeker, vers version.Binary, additionalSeries ...string) (
-	*coretools.Tools, error,
-) {
+func (a *fakeUpgradeJujuAPI) UploadTools(r io.ReadSeeker, vers version.Binary, additionalSeries ...string) (coretools.List, error) {
 	panic("not implemented")
 }
 

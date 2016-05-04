@@ -43,12 +43,11 @@ func ensureMongoService(agentConfig agent.Config) error {
 		return errors.Errorf("agent config has no state serving info")
 	}
 
-	// TODO(perrito666) determine mongo version from dump.
 	err := mongo.EnsureServiceInstalled(agentConfig.DataDir(),
 		si.StatePort,
 		oplogSize,
 		numaCtlPolicy,
-		mongo.Mongo24,
+		agentConfig.MongoVersion(),
 		true,
 	)
 	return errors.Annotate(err, "cannot ensure that mongo service start/stop scripts are in place")
@@ -109,7 +108,7 @@ func (b *backups) Restore(backupId string, args RestoreArgs) (names.Tag, error) 
 	if !ok {
 		return nil, errors.Errorf("cannot determine state serving info")
 	}
-	APIHostPorts := network.NewHostPorts(ssi.APIPort, args.PrivateAddress)
+	APIHostPorts := network.NewHostPorts(ssi.APIPort, args.PrivateAddress, args.PublicAddress)
 	agentConfig.SetAPIHostPorts([][]network.HostPort{APIHostPorts})
 	if err := agentConfig.Write(); err != nil {
 		return nil, errors.Annotate(err, "cannot write new agent configuration")
@@ -198,18 +197,17 @@ func (b *backups) Restore(backupId string, args RestoreArgs) (names.Tag, error) 
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	if err = updateAllMachines(args.PrivateAddress, machines); err != nil {
+	if err := updateAllMachines(args.PrivateAddress, machines); err != nil {
 		return nil, errors.Annotate(err, "cannot update agents")
-	}
-
-	info, err := st.RestoreInfoSetter()
-	if err != nil {
-		return nil, errors.Trace(err)
 	}
 
 	// Mark restoreInfo as Finished so upon restart of the apiserver
 	// the client can reconnect and determine if we where succesful.
+	info := st.RestoreInfo()
 	err = info.SetStatus(state.RestoreFinished)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 
 	return backupMachine, errors.Annotate(err, "failed to set status to finished")
 }

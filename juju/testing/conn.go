@@ -25,6 +25,7 @@ import (
 
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/api"
+	"github.com/juju/juju/cert"
 	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/environs"
@@ -83,8 +84,9 @@ type JujuConnSuite struct {
 	APIState           api.Connection
 	apiStates          []api.Connection // additional api.Connections to close on teardown
 	ControllerStore    jujuclient.ClientStore
-	BackingState       *state.State // The State being used by the API server
-	RootDir            string       // The faked-up root directory.
+	BackingState       *state.State     // The State being used by the API server
+	BackingStatePool   *state.StatePool // The StatePool being used by the API server
+	RootDir            string           // The faked-up root directory.
 	LogDir             string
 	oldHome            string
 	oldJujuXDGDataHome string
@@ -98,6 +100,7 @@ func (s *JujuConnSuite) SetUpSuite(c *gc.C) {
 	s.MgoSuite.SetUpSuite(c)
 	s.FakeJujuXDGDataHomeSuite.SetUpSuite(c)
 	s.PatchValue(&utils.OutgoingAccessAllowed, false)
+	s.PatchValue(&cert.KeyBits, 1024) // Use a shorter key for a faster TLS handshake.
 }
 
 func (s *JujuConnSuite) TearDownSuite(c *gc.C) {
@@ -214,7 +217,8 @@ func (s *JujuConnSuite) setUpConn(c *gc.C) {
 	home := filepath.Join(s.RootDir, "/home/ubuntu")
 	err := os.MkdirAll(home, 0777)
 	c.Assert(err, jc.ErrorIsNil)
-	utils.SetHome(home)
+	err = utils.SetHome(home)
+	c.Assert(err, jc.ErrorIsNil)
 
 	err = os.MkdirAll(filepath.Join(home, ".local", "share"), 0777)
 	c.Assert(err, jc.ErrorIsNil)
@@ -277,7 +281,9 @@ func (s *JujuConnSuite) setUpConn(c *gc.C) {
 	err = bootstrap.Bootstrap(modelcmd.BootstrapContext(ctx), environ, bootstrap.BootstrapParams{})
 	c.Assert(err, jc.ErrorIsNil)
 
-	s.BackingState = environ.(GetStater).GetStateInAPIServer()
+	getStater := environ.(GetStater)
+	s.BackingState = getStater.GetStateInAPIServer()
+	s.BackingStatePool = getStater.GetStatePoolInAPIServer()
 
 	s.State, err = newState(environ, s.BackingState.MongoConnectionInfo())
 	c.Assert(err, jc.ErrorIsNil)
@@ -446,10 +452,11 @@ func PutCharm(st *state.State, curl *charm.URL, repo charmrepo.Interface, bumpRe
 	if sch, err := st.Charm(curl); err == nil {
 		return sch, nil
 	}
-	return addCharm(st, curl, ch)
+	return AddCharm(st, curl, ch)
 }
 
-func addCharm(st *state.State, curl *charm.URL, ch charm.Charm) (*state.Charm, error) {
+// AddCharm adds the charm to state and storage.
+func AddCharm(st *state.State, curl *charm.URL, ch charm.Charm) (*state.Charm, error) {
 	var f *os.File
 	name := charm.Quote(curl.String())
 	switch ch := ch.(type) {
@@ -522,6 +529,7 @@ func (s *JujuConnSuite) sampleConfig() testing.Attrs {
 
 type GetStater interface {
 	GetStateInAPIServer() *state.State
+	GetStatePoolInAPIServer() *state.StatePool
 }
 
 func (s *JujuConnSuite) tearDownConn(c *gc.C) {
@@ -559,7 +567,8 @@ func (s *JujuConnSuite) tearDownConn(c *gc.C) {
 	}
 
 	dummy.Reset(c)
-	utils.SetHome(s.oldHome)
+	err := utils.SetHome(s.oldHome)
+	c.Assert(err, jc.ErrorIsNil)
 	osenv.SetJujuXDGDataHome(s.oldJujuXDGDataHome)
 	s.oldHome = ""
 	s.RootDir = ""

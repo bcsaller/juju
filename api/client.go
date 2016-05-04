@@ -18,11 +18,13 @@ import (
 	"github.com/juju/version"
 	"golang.org/x/net/websocket"
 	"gopkg.in/juju/charm.v6-unstable"
+	csparams "gopkg.in/juju/charmrepo.v2-unstable/csclient/params"
 	"gopkg.in/macaroon.v1"
 
 	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/apiserver/params"
 	"github.com/juju/juju/constraints"
+	"github.com/juju/juju/downloader"
 	"github.com/juju/juju/network"
 	"github.com/juju/juju/tools"
 )
@@ -364,6 +366,8 @@ func (c *Client) validateCharmVersion(ch charm.Charm) error {
 	return nil
 }
 
+// TODO(ericsnow) Use charmstore.CharmID for AddCharm() & AddCharmWithAuth().
+
 // AddCharm adds the given charm URL (which must include revision) to
 // the model, if it does not exist yet. Local charms are not
 // supported, only charm store URLs. See also AddLocalCharm() in the
@@ -372,11 +376,15 @@ func (c *Client) validateCharmVersion(ch charm.Charm) error {
 // If the AddCharm API call fails because of an authorization error
 // when retrieving the charm from the charm store, an error
 // satisfying params.IsCodeUnauthorized will be returned.
-func (c *Client) AddCharm(curl *charm.URL) error {
-	args := params.CharmURL{
-		URL: curl.String(),
+func (c *Client) AddCharm(curl *charm.URL, channel csparams.Channel) error {
+	args := params.AddCharm{
+		URL:     curl.String(),
+		Channel: string(channel),
 	}
-	return c.facade.FacadeCall("AddCharm", args, nil)
+	if err := c.facade.FacadeCall("AddCharm", args, nil); err != nil {
+		return errors.Trace(err)
+	}
+	return nil
 }
 
 // AddCharmWithAuthorization is like AddCharm except it also provides
@@ -388,12 +396,16 @@ func (c *Client) AddCharm(curl *charm.URL) error {
 // If the AddCharmWithAuthorization API call fails because of an
 // authorization error when retrieving the charm from the charm store,
 // an error satisfying params.IsCodeUnauthorized will be returned.
-func (c *Client) AddCharmWithAuthorization(curl *charm.URL, csMac *macaroon.Macaroon) error {
+func (c *Client) AddCharmWithAuthorization(curl *charm.URL, channel csparams.Channel, csMac *macaroon.Macaroon) error {
 	args := params.AddCharmWithAuthorization{
 		URL:                curl.String(),
+		Channel:            string(channel),
 		CharmStoreMacaroon: csMac,
 	}
-	return c.facade.FacadeCall("AddCharmWithAuthorization", args, nil)
+	if err := c.facade.FacadeCall("AddCharmWithAuthorization", args, nil); err != nil {
+		return errors.Trace(err)
+	}
+	return nil
 }
 
 // ResolveCharm resolves the best available charm URLs with series, for charm
@@ -414,15 +426,62 @@ func (c *Client) ResolveCharm(ref *charm.URL) (*charm.URL, error) {
 	return urlInfo.URL, nil
 }
 
+// OpenCharm streams out the identified charm from the controller via
+// the API.
+func (c *Client) OpenCharm(curl *charm.URL) (io.ReadCloser, error) {
+	// The returned httpClient sets the base url to /model/<uuid> if it can.
+	httpClient, err := c.st.HTTPClient()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	blob, err := openCharm(httpClient, curl)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return blob, nil
+}
+
+// openCharm streams out the identified charm from the controller via
+// the API.
+func openCharm(httpClient HTTPDoer, curl *charm.URL) (io.ReadCloser, error) {
+	query := make(url.Values)
+	query.Add("url", curl.String())
+	query.Add("file", "*")
+	blob, err := openBlob(httpClient, "/charms", query)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return blob, nil
+}
+
+// NewCharmDownloader returns a new charm downloader that wraps the
+// provided API client.
+func NewCharmDownloader(client *Client) *downloader.Downloader {
+	dlr := &downloader.Downloader{
+		OpenBlob: func(url *url.URL) (io.ReadCloser, error) {
+			curl, err := charm.ParseURL(url.String())
+			if err != nil {
+				return nil, errors.Annotate(err, "did not receive a valid charm URL")
+			}
+			reader, err := client.OpenCharm(curl)
+			if err != nil {
+				return nil, errors.Trace(err)
+			}
+			return reader, nil
+		},
+	}
+	return dlr
+}
+
 // UploadTools uploads tools at the specified location to the API server over HTTPS.
-func (c *Client) UploadTools(r io.ReadSeeker, vers version.Binary, additionalSeries ...string) (*tools.Tools, error) {
+func (c *Client) UploadTools(r io.ReadSeeker, vers version.Binary, additionalSeries ...string) (tools.List, error) {
 	endpoint := fmt.Sprintf("/tools?binaryVersion=%s&series=%s", vers, strings.Join(additionalSeries, ","))
 	contentType := "application/x-tar-gz"
 	var resp params.ToolsResult
 	if err := c.httpPost(r, endpoint, contentType, &resp); err != nil {
 		return nil, errors.Trace(err)
 	}
-	return resp.Tools, nil
+	return resp.ToolsList, nil
 }
 
 func (c *Client) httpPost(content io.ReadSeeker, endpoint, contentType string, response interface{}) error {
@@ -526,9 +585,6 @@ type DebugLogParams struct {
 // the DebugLogParams are returned. It returns an error that satisfies
 // errors.IsNotImplemented when the API server does not support the
 // end-point.
-//
-// TODO(dimitern) We already have errors.IsNotImplemented - why do we
-// need to define a different error for this purpose here?
 func (c *Client) WatchDebugLog(args DebugLogParams) (io.ReadCloser, error) {
 	// The websocket connection just hangs if the server doesn't have the log
 	// end point. So do a version check, as version was added at the same time

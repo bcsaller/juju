@@ -24,6 +24,7 @@ import (
 	"github.com/juju/juju/cloudconfig/instancecfg"
 	"github.com/juju/juju/constraints"
 	"github.com/juju/juju/environs"
+	"github.com/juju/juju/environs/gui"
 	"github.com/juju/juju/environs/imagemetadata"
 	"github.com/juju/juju/environs/simplestreams"
 	"github.com/juju/juju/environs/storage"
@@ -71,8 +72,14 @@ type BootstrapParams struct {
 	Placement string
 
 	// UploadTools reports whether we should upload the local tools and
-	// override the environment's specified agent-version.
+	// override the environment's specified agent-version. It is an error
+	// to specify UploadTools with a nil BuildToolsTarball.
 	UploadTools bool
+
+	// BuildToolsTarball, if non-nil, is a function that may be used to
+	// build tools to upload. If this is nil, tools uploading will never
+	// take place.
+	BuildToolsTarball sync.BuildToolsTarballFunc
 
 	// MetadataDir is an optional path to a local directory containing
 	// tools and/or image metadata.
@@ -81,6 +88,11 @@ type BootstrapParams struct {
 	// AgentVersion, if set, determines the exact tools version that
 	// will be used to start the Juju agents.
 	AgentVersion *version.Number
+
+	// GUIDataSourceBaseURL holds the simplestreams data source base URL
+	// used to retrieve the Juju GUI archive installed in the controller.
+	// If not set, the Juju GUI is not installed from simplestreams.
+	GUIDataSourceBaseURL string
 }
 
 // Bootstrap bootstraps the given environment. The supplied constraints are
@@ -149,7 +161,7 @@ func Bootstrap(ctx environs.BootstrapContext, environ environs.Environ, args Boo
 	logger.Debugf("network management by juju enabled: %v", !disableNetworkManagement)
 	availableTools, err := findAvailableTools(
 		environ, args.AgentVersion, bootstrapConstraints.Arch,
-		bootstrapSeries, args.UploadTools,
+		bootstrapSeries, args.UploadTools, args.BuildToolsTarball != nil,
 	)
 	if errors.IsNotFound(err) {
 		return errors.New(noToolsMessage)
@@ -208,16 +220,18 @@ func Bootstrap(ctx environs.BootstrapContext, environ environs.Environ, args Boo
 	if err != nil {
 		return err
 	}
-	selectedTools, err := setBootstrapTools(environ, matchingTools)
+	selectedToolsList, err := setBootstrapTools(environ, matchingTools)
 	if err != nil {
 		return err
 	}
-	if selectedTools.URL == "" {
-		if !args.UploadTools {
-			logger.Warningf("no prepackaged tools available")
+	havePrepackaged := false
+	for i, selectedTools := range selectedToolsList {
+		if selectedTools.URL != "" {
+			havePrepackaged = true
+			continue
 		}
 		ctx.Infof("Building tools to upload (%s)", selectedTools.Version)
-		builtTools, err := sync.BuildToolsTarball(&selectedTools.Version.Number, cfg.AgentStream())
+		builtTools, err := args.BuildToolsTarball(&selectedTools.Version.Number, cfg.AgentStream())
 		if err != nil {
 			return errors.Annotate(err, "cannot upload bootstrap tools")
 		}
@@ -226,6 +240,14 @@ func Bootstrap(ctx environs.BootstrapContext, environ environs.Environ, args Boo
 		selectedTools.URL = fmt.Sprintf("file://%s", filename)
 		selectedTools.Size = builtTools.Size
 		selectedTools.SHA256 = builtTools.Sha256Hash
+		selectedToolsList[i] = selectedTools
+	}
+	if !havePrepackaged && !args.UploadTools {
+		// There are no prepackaged agents, so we must upload
+		// even though the user didn't ask for it. We only do
+		// this when the image-stream is not "released" and
+		// the agent version hasn't been specified.
+		logger.Warningf("no prepackaged tools available")
 	}
 
 	ctx.Infof("Installing Juju agent on bootstrap instance")
@@ -239,18 +261,15 @@ func Bootstrap(ctx environs.BootstrapContext, environ environs.Environ, args Boo
 	if err != nil {
 		return err
 	}
-	instanceConfig.Tools = selectedTools
+	if err := instanceConfig.SetTools(selectedToolsList); err != nil {
+		return errors.Trace(err)
+	}
 	instanceConfig.CustomImageMetadata = customImageMetadata
 	instanceConfig.HostedModelConfig = args.HostedModelConfig
 
-	gui, err := guiArchive()
-	if err != nil {
-		return errors.Annotate(err, "cannot set up Juju GUI")
-	}
-	if gui != nil {
-		instanceConfig.GUI = gui
-		ctx.Infof("Using Juju GUI %s from %s", gui.Version, gui.URL)
-	}
+	instanceConfig.GUI = guiArchive(args.GUIDataSourceBaseURL, func(msg string) {
+		ctx.Infof(msg)
+	})
 
 	if err := result.Finalize(ctx, instanceConfig); err != nil {
 		return err
@@ -375,7 +394,7 @@ func bootstrapImageMetadata(
 
 // setBootstrapTools returns the newest tools from the given tools list,
 // and updates the agent-version configuration attribute.
-func setBootstrapTools(environ environs.Environ, possibleTools coretools.List) (*coretools.Tools, error) {
+func setBootstrapTools(environ environs.Environ, possibleTools coretools.List) (coretools.List, error) {
 	if len(possibleTools) == 0 {
 		return nil, fmt.Errorf("no bootstrap tools available")
 	}
@@ -410,7 +429,7 @@ func setBootstrapTools(environ environs.Environ, possibleTools coretools.List) (
 		}
 	}
 	logger.Infof("picked bootstrap tools version: %s", bootstrapVersion)
-	return toolsList[0], nil
+	return toolsList, nil
 }
 
 // findCompatibleTools finds tools in the list that have the same major, minor
@@ -480,31 +499,62 @@ func validateConstraints(env environs.Environ, cons constraints.Value) error {
 	return err
 }
 
-func guiArchive() (*coretools.GUIArchive, error) {
-	// TODO frankban: by default the GUI archive must be retrieved from
-	// simplestreams. The environment variable is only used temporarily for
-	// development purposes. This will be fixed before landing to master.
+// guiArchive returns information on the GUI archive that will be uploaded
+// to the controller. Possible errors in retrieving the GUI archive information
+// do not prevent the model to be bootstrapped. If dataSourceBaseURL is
+// non-empty, remote GUI archive info is retrieved from simplestreams using it
+// as the base URL. The given logProgress function is used to inform users
+// about errors or progress in setting up the Juju GUI.
+func guiArchive(dataSourceBaseURL string, logProgress func(string)) *coretools.GUIArchive {
+	// The environment variable is only used for development purposes.
 	path := os.Getenv("JUJU_GUI")
-	if path == "" {
-		// TODO frankban: implement the simplestreams case.
-		// This will be fixed before landing to master.
-		return nil, nil
+	if path != "" {
+		vers, err := guiVersion(path)
+		if err != nil {
+			logProgress(fmt.Sprintf("Cannot use Juju GUI at %q: %s", path, err))
+			return nil
+		}
+		hash, size, err := hashAndSize(path)
+		if err != nil {
+			logProgress(fmt.Sprintf("Cannot use Juju GUI at %q: %s", path, err))
+			return nil
+		}
+		logProgress(fmt.Sprintf("Preparing for Juju GUI %s installation from local archive", vers))
+		return &coretools.GUIArchive{
+			Version: vers,
+			URL:     "file://" + filepath.ToSlash(path),
+			SHA256:  hash,
+			Size:    size,
+		}
 	}
-	number, err := guiVersion(path)
+	// Check if the user requested to bootstrap with no GUI.
+	if dataSourceBaseURL == "" {
+		logProgress("Juju GUI installation has been disabled")
+		return nil
+	}
+	// Fetch GUI archives info from simplestreams.
+	source := gui.NewDataSource(dataSourceBaseURL)
+	allMeta, err := guiFetchMetadata(gui.ReleasedStream, source)
 	if err != nil {
-		return nil, errors.Mask(err)
+		logProgress(fmt.Sprintf("Unable to fetch Juju GUI info: %s", err))
+		return nil
 	}
-	hash, size, err := hashAndSize(path)
-	if err != nil {
-		return nil, errors.Mask(err)
+	if len(allMeta) == 0 {
+		logProgress("No available Juju GUI archives found")
+		return nil
 	}
+	// Metadata info are returned in descending version order.
+	logProgress(fmt.Sprintf("Preparing for Juju GUI %s release installation", allMeta[0].Version))
 	return &coretools.GUIArchive{
-		Version: number,
-		URL:     "file://" + filepath.ToSlash(path),
-		SHA256:  hash,
-		Size:    size,
-	}, nil
+		Version: allMeta[0].Version,
+		URL:     allMeta[0].FullPath,
+		SHA256:  allMeta[0].SHA256,
+		Size:    allMeta[0].Size,
+	}
 }
+
+// guiFetchMetadata is defined for testing purposes.
+var guiFetchMetadata = gui.FetchMetadata
 
 // guiVersion retrieves the GUI version from the juju-gui-* directory included
 // in the bz2 archive at the given path.

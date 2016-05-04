@@ -71,11 +71,13 @@ func (s *controllerSuite) TestModelConfig(c *gc.C) {
 }
 
 func (s *controllerSuite) TestDestroyController(c *gc.C) {
-	s.Factory.MakeModel(c, &factory.ModelParams{Name: "foo"}).Close()
+	st := s.Factory.MakeModel(c, &factory.ModelParams{Name: "foo"})
+	factory.NewFactory(st).MakeMachine(c, nil) // make it non-empty
+	st.Close()
 
 	sysManager := s.OpenAPI(c)
 	err := sysManager.DestroyController(false)
-	c.Assert(err, gc.ErrorMatches, "controller model cannot be destroyed before all other models are destroyed")
+	c.Assert(err, gc.ErrorMatches, `failed to destroy model: hosting 1 other models \(controller has hosted models\)`)
 }
 
 func (s *controllerSuite) TestListBlockedModels(c *gc.C) {

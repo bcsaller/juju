@@ -10,13 +10,13 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"time"
 
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
 	"github.com/juju/names"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
+	"github.com/juju/utils"
 	"golang.org/x/net/websocket"
 	gc "gopkg.in/check.v1"
 	"gopkg.in/macaroon-bakery.v1/bakery"
@@ -220,19 +220,13 @@ func (s *serverSuite) TestMachineLoginStartsPinger(c *gc.C) {
 
 	// Login as the machine agent of the created machine.
 	st := s.OpenAPIAsMachine(c, machine.Tag(), password, "fake_nonce")
+	defer func() {
+		err := st.Close()
+		c.Check(err, jc.ErrorIsNil)
+	}()
 
 	// Make sure the pinger has started.
 	s.assertAlive(c, machine, true)
-
-	// Now make sure it stops when connection is closed.
-	c.Assert(st.Close(), gc.IsNil)
-
-	// Sync, then wait for a bit to make sure the state is updated.
-	s.State.StartSync()
-	<-time.After(coretesting.ShortWait)
-	s.State.StartSync()
-
-	s.assertAlive(c, machine, false)
 }
 
 func (s *serverSuite) TestUnitLoginStartsPinger(c *gc.C) {
@@ -244,26 +238,20 @@ func (s *serverSuite) TestUnitLoginStartsPinger(c *gc.C) {
 
 	// Login as the unit agent of the created unit.
 	st := s.OpenAPIAs(c, unit.Tag(), password)
+	defer func() {
+		err := st.Close()
+		c.Check(err, jc.ErrorIsNil)
+	}()
 
 	// Make sure the pinger has started.
 	s.assertAlive(c, unit, true)
-
-	// Now make sure it stops when connection is closed.
-	c.Assert(st.Close(), gc.IsNil)
-
-	// Sync, then wait for a bit to make sure the state is updated.
-	s.State.StartSync()
-	<-time.After(coretesting.ShortWait)
-	s.State.StartSync()
-
-	s.assertAlive(c, unit, false)
 }
 
-func (s *serverSuite) assertAlive(c *gc.C, entity presence.Presencer, isAlive bool) {
+func (s *serverSuite) assertAlive(c *gc.C, entity presence.Agent, expectAlive bool) {
 	s.State.StartSync()
 	alive, err := entity.AgentPresence()
 	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(alive, gc.Equals, isAlive)
+	c.Assert(alive, gc.Equals, expectAlive)
 }
 
 func dialWebsocket(c *gc.C, addr, path string, tlsVersion uint16) (*websocket.Conn, error) {
@@ -275,10 +263,13 @@ func dialWebsocket(c *gc.C, addr, path string, tlsVersion uint16) (*websocket.Co
 	xcert, err := cert.ParseCert(coretesting.CACert)
 	c.Assert(err, jc.ErrorIsNil)
 	pool.AddCert(xcert)
-	config.TlsConfig = &tls.Config{
-		RootCAs:    pool,
-		MaxVersion: tlsVersion,
+	config.TlsConfig = utils.SecureTLSConfig()
+	if tlsVersion > 0 {
+		// This is for testing only. Please don't muck with the maxtlsversion in
+		// production.
+		config.TlsConfig.MaxVersion = tlsVersion
 	}
+	config.TlsConfig.RootCAs = pool
 	return websocket.DialConfig(config)
 }
 
@@ -378,7 +369,7 @@ func (s *macaroonServerSuite) TestServerBakery(c *gc.C) {
 	ms, err := client.DischargeAll(m)
 	c.Assert(err, jc.ErrorIsNil)
 
-	err = bsvc.Check(ms, checkers.New())
+	err = bsvc.(*bakery.Service).Check(ms, checkers.New())
 	c.Assert(err, gc.IsNil)
 }
 

@@ -9,8 +9,8 @@ package service
 import (
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
-	"github.com/juju/names"
 	"gopkg.in/juju/charm.v6-unstable"
+	csparams "gopkg.in/juju/charmrepo.v2-unstable/csclient/params"
 	goyaml "gopkg.in/yaml.v2"
 
 	"github.com/juju/juju/apiserver/common"
@@ -155,11 +155,8 @@ func deployService(st *state.State, owner string, args params.ServiceDeploy) err
 	if err != nil {
 		return errors.Trace(err)
 	}
-	// Convert network tags to names for any given networks.
-	requestedNetworks, err := networkTagsToNames(args.Networks)
-	if err != nil {
-		return errors.Trace(err)
-	}
+
+	channel := csparams.Channel(args.Channel)
 
 	_, err = jjj.DeployService(st,
 		jjj.DeployServiceParams{
@@ -168,11 +165,11 @@ func deployService(st *state.State, owner string, args params.ServiceDeploy) err
 			// TODO(dfc) ServiceOwner should be a tag
 			ServiceOwner:     owner,
 			Charm:            ch,
+			Channel:          channel,
 			NumUnits:         args.NumUnits,
 			ConfigSettings:   settings,
 			Constraints:      args.Constraints,
 			Placement:        args.Placement,
-			Networks:         requestedNetworks,
 			Storage:          args.Storage,
 			EndpointBindings: args.EndpointBindings,
 			Resources:        args.Resources,
@@ -193,18 +190,6 @@ func ServiceSetSettingsStrings(service *state.Service, settings map[string]strin
 		return errors.Trace(err)
 	}
 	return service.UpdateConfigSettings(changes)
-}
-
-func networkTagsToNames(tags []string) ([]string, error) {
-	netNames := make([]string, len(tags))
-	for i, tag := range tags {
-		t, err := names.ParseNetworkTag(tag)
-		if err != nil {
-			return nil, err
-		}
-		netNames[i] = t.Id()
-	}
-	return netNames, nil
 }
 
 // parseSettingsCompatible parses setting strings in a way that is
@@ -255,7 +240,10 @@ func (api *API) Update(args params.ServiceUpdate) error {
 	}
 	// Set the charm for the given service.
 	if args.CharmUrl != "" {
-		if err = api.serviceSetCharm(svc, args.CharmUrl, args.ForceSeries, args.ForceCharmUrl, nil); err != nil {
+		// For now we do not support changing the channel through Update().
+		// TODO(ericsnow) Support it?
+		channel := svc.Channel()
+		if err = api.serviceSetCharm(svc, args.CharmUrl, channel, args.ForceSeries, args.ForceCharmUrl, nil); err != nil {
 			return errors.Trace(err)
 		}
 	}
@@ -294,11 +282,12 @@ func (api *API) SetCharm(args params.ServiceSetCharm) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	return api.serviceSetCharm(service, args.CharmUrl, args.ForceSeries, args.ForceUnits, args.ResourceIDs)
+	channel := csparams.Channel(args.Channel)
+	return api.serviceSetCharm(service, args.CharmUrl, channel, args.ForceSeries, args.ForceUnits, args.ResourceIDs)
 }
 
 // serviceSetCharm sets the charm for the given service.
-func (api *API) serviceSetCharm(service *state.Service, url string, forceSeries, forceUnits bool, resourceIDs map[string]string) error {
+func (api *API) serviceSetCharm(service *state.Service, url string, channel csparams.Channel, forceSeries, forceUnits bool, resourceIDs map[string]string) error {
 	curl, err := charm.ParseURL(url)
 	if err != nil {
 		return errors.Trace(err)
@@ -309,6 +298,7 @@ func (api *API) serviceSetCharm(service *state.Service, url string, forceSeries,
 	}
 	cfg := state.SetCharmConfig{
 		Charm:       sch,
+		Channel:     channel,
 		ForceSeries: forceSeries,
 		ForceUnits:  forceUnits,
 		ResourceIDs: resourceIDs,

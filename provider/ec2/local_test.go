@@ -12,9 +12,11 @@ import (
 	"strings"
 
 	"github.com/juju/errors"
+	"github.com/juju/names"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils"
 	"github.com/juju/utils/arch"
+	"github.com/juju/utils/clock"
 	"github.com/juju/utils/series"
 	"github.com/juju/utils/set"
 	"github.com/juju/utils/ssh"
@@ -34,6 +36,7 @@ import (
 	"github.com/juju/juju/environs/jujutest"
 	"github.com/juju/juju/environs/simplestreams"
 	sstesting "github.com/juju/juju/environs/simplestreams/testing"
+	"github.com/juju/juju/environs/tags"
 	envtesting "github.com/juju/juju/environs/testing"
 	"github.com/juju/juju/environs/tools"
 	"github.com/juju/juju/feature"
@@ -44,6 +47,7 @@ import (
 	"github.com/juju/juju/network"
 	"github.com/juju/juju/provider/common"
 	"github.com/juju/juju/provider/ec2"
+	"github.com/juju/juju/storage"
 	coretesting "github.com/juju/juju/testing"
 	jujuversion "github.com/juju/juju/version"
 )
@@ -117,6 +121,7 @@ type localServer struct {
 	// instances.
 	createRootDisks bool
 
+	client *amzec2.EC2
 	ec2srv *ec2test.Server
 	s3srv  *s3test.Server
 	config *s3test.Config
@@ -140,6 +145,10 @@ func (srv *localServer) startServer(c *gc.C) {
 		S3LocationConstraint: true,
 	}
 	srv.addSpice(c)
+
+	region := aws.Regions["test"]
+	signer := aws.SignV4Factory(region.Name, "ec2")
+	srv.client = amzec2.New(aws.Auth{}, region, signer)
 
 	zones := make([]amzec2.AvailabilityZoneInfo, 3)
 	zones[0].Region = "test"
@@ -326,22 +335,198 @@ func (t *localServerSuite) TestBootstrapInstanceUserDataAndState(c *gc.C) {
 	c.Assert(err, gc.Equals, environs.ErrNotBootstrapped)
 }
 
-func (t *localServerSuite) TestDestroySecurityGroupInsistentlyError(c *gc.C) {
+func (t *localServerSuite) TestTerminateInstancesIgnoresNotFound(c *gc.C) {
 	env := t.Prepare(c)
 	err := bootstrap.Bootstrap(envtesting.BootstrapContext(c), env, bootstrap.BootstrapParams{})
 	c.Assert(err, jc.ErrorIsNil)
 
-	called := false
-	msg := "destroy security group error"
-	t.BaseSuite.PatchValue(ec2.DeleteSecurityGroupInsistently, func(inst ec2.SecurityGroupCleaner, group amzec2.SecurityGroup) error {
-		called = true
-		return errors.New(msg)
+	t.BaseSuite.PatchValue(ec2.DeleteSecurityGroupInsistently, deleteSecurityGroupForTestFunc)
+	insts, err := env.AllInstances()
+	c.Assert(err, jc.ErrorIsNil)
+	idsToStop := make([]instance.Id, len(insts)+1)
+	for i, one := range insts {
+		idsToStop[i] = one.Id()
+	}
+	idsToStop[len(insts)] = instance.Id("i-am-not-found")
+
+	err = env.StopInstances(idsToStop...)
+	// NotFound should be ignored
+	c.Assert(err, jc.ErrorIsNil)
+}
+
+func (t *localServerSuite) TestDestroyErr(c *gc.C) {
+	env := t.Prepare(c)
+	err := bootstrap.Bootstrap(envtesting.BootstrapContext(c), env, bootstrap.BootstrapParams{})
+	c.Assert(err, jc.ErrorIsNil)
+
+	msg := "terminate instances error"
+	t.BaseSuite.PatchValue(ec2.TerminateInstancesById, func(ec2inst *amzec2.EC2, ids ...instance.Id) (*amzec2.TerminateInstancesResp, error) {
+		return nil, errors.New(msg)
 	})
 
 	err = env.Destroy()
+	c.Assert(errors.Cause(err).Error(), jc.Contains, msg)
+}
+
+func (t *localServerSuite) TestGetTerminatedInstances(c *gc.C) {
+	env := t.Prepare(c)
+	err := bootstrap.Bootstrap(envtesting.BootstrapContext(c), env, bootstrap.BootstrapParams{})
 	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(called, jc.IsTrue)
-	c.Assert(c.GetTestLog(), jc.Contains, "WARNING juju.provider.ec2 provider failure: destroy security group error")
+
+	// create another instance to terminate
+	inst1, _ := testing.AssertStartInstance(c, env, "1")
+	inst := t.srv.ec2srv.Instance(string(inst1.Id()))
+	c.Assert(inst, gc.NotNil)
+	t.BaseSuite.PatchValue(ec2.TerminateInstancesById, func(ec2inst *amzec2.EC2, ids ...instance.Id) (*amzec2.TerminateInstancesResp, error) {
+		// Terminate the one destined for termination and
+		// err out to ensure that one instance will be terminated, the other - not.
+		_, err = ec2inst.TerminateInstances([]string{string(inst1.Id())})
+		c.Assert(err, jc.ErrorIsNil)
+		return nil, errors.New("terminate instances error")
+	})
+	err = env.Destroy()
+	c.Assert(err, gc.NotNil)
+
+	terminated, err := ec2.TerminatedInstances(env)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(terminated, gc.HasLen, 1)
+	c.Assert(terminated[0].Id(), jc.DeepEquals, inst1.Id())
+}
+
+func (t *localServerSuite) TestInstanceSecurityGroupsWitheInstanceStatusFilter(c *gc.C) {
+	env := t.Prepare(c)
+	err := bootstrap.Bootstrap(envtesting.BootstrapContext(c), env, bootstrap.BootstrapParams{})
+	c.Assert(err, jc.ErrorIsNil)
+
+	insts, err := env.AllInstances()
+	c.Assert(err, jc.ErrorIsNil)
+	ids := make([]instance.Id, len(insts))
+	for i, one := range insts {
+		ids[i] = one.Id()
+	}
+
+	groupsNoInstanceFilter, err := ec2.InstanceSecurityGroups(env, ids)
+	c.Assert(err, jc.ErrorIsNil)
+	// get all security groups for test instances
+	c.Assert(groupsNoInstanceFilter, gc.HasLen, 2)
+
+	groupsFilteredForTerminatedInstances, err := ec2.InstanceSecurityGroups(env, ids, "shutting-down", "terminated")
+	c.Assert(err, jc.ErrorIsNil)
+	// get all security groups for terminated test instances
+	c.Assert(groupsFilteredForTerminatedInstances, gc.HasLen, 0)
+}
+
+func (t *localServerSuite) TestDestroyControllerModelDeleteSecurityGroupInsistentlyError(c *gc.C) {
+	env := t.Prepare(c)
+	err := bootstrap.Bootstrap(envtesting.BootstrapContext(c), env, bootstrap.BootstrapParams{})
+	c.Assert(err, jc.ErrorIsNil)
+	t.testDestroyModelDeleteSecurityGroupInsistentlyError(
+		c, env, "destroying managed environs: cannot delete security group .*: ",
+	)
+}
+
+func (t *localServerSuite) TestDestroyHostedModelDeleteSecurityGroupInsistentlyError(c *gc.C) {
+	env := t.Prepare(c)
+	err := bootstrap.Bootstrap(envtesting.BootstrapContext(c), env, bootstrap.BootstrapParams{})
+
+	cfg, err := env.Config().Apply(map[string]interface{}{"controller-uuid": "7e386e08-cba7-44a4-a76e-7c1633584210"})
+	c.Assert(err, jc.ErrorIsNil)
+	env, err = environs.New(cfg)
+	c.Assert(err, jc.ErrorIsNil)
+	t.testDestroyModelDeleteSecurityGroupInsistentlyError(
+		c, env, "cannot delete environment security groups: cannot delete default security group: ",
+	)
+}
+
+func (t *localServerSuite) testDestroyModelDeleteSecurityGroupInsistentlyError(c *gc.C, env environs.Environ, errPrefix string) {
+	msg := "destroy security group error"
+	t.BaseSuite.PatchValue(ec2.DeleteSecurityGroupInsistently, func(
+		ec2.SecurityGroupCleaner, amzec2.SecurityGroup, clock.Clock,
+	) error {
+		return errors.New(msg)
+	})
+	err := env.Destroy()
+	c.Assert(err, gc.ErrorMatches, errPrefix+"destroy security group error")
+}
+
+func (t *localServerSuite) TestDestroyControllerDestroysHostedModelResources(c *gc.C) {
+	controllerEnv := t.Prepare(c)
+	err := bootstrap.Bootstrap(envtesting.BootstrapContext(c), controllerEnv, bootstrap.BootstrapParams{})
+
+	// Create a hosted model environment with an instance and a volume.
+	t.srv.ec2srv.SetInitialInstanceState(ec2test.Running)
+	cfg, err := controllerEnv.Config().Apply(map[string]interface{}{
+		"uuid":          "7e386e08-cba7-44a4-a76e-7c1633584210",
+		"firewall-mode": "global",
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	env, err := environs.New(cfg)
+	c.Assert(err, jc.ErrorIsNil)
+	inst, _ := testing.AssertStartInstance(c, env, "0")
+	c.Assert(err, jc.ErrorIsNil)
+	ebsProvider := ec2.EBSProvider()
+	vs, err := ebsProvider.VolumeSource(env.Config(), nil)
+	c.Assert(err, jc.ErrorIsNil)
+	volumeResults, err := vs.CreateVolumes([]storage.VolumeParams{{
+		Tag:      names.NewVolumeTag("0"),
+		Size:     1024,
+		Provider: ec2.EBS_ProviderType,
+		ResourceTags: map[string]string{
+			tags.JujuController: coretesting.ModelTag.Id(),
+			tags.JujuModel:      "7e386e08-cba7-44a4-a76e-7c1633584210",
+		},
+		Attachment: &storage.VolumeAttachmentParams{
+			AttachmentParams: storage.AttachmentParams{
+				InstanceId: inst.Id(),
+			},
+		},
+	}})
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(volumeResults, gc.HasLen, 1)
+	c.Assert(volumeResults[0].Error, jc.ErrorIsNil)
+
+	assertInstances := func(expect ...instance.Id) {
+		insts, err := env.AllInstances()
+		c.Assert(err, jc.ErrorIsNil)
+		ids := make([]instance.Id, len(insts))
+		for i, inst := range insts {
+			ids[i] = inst.Id()
+		}
+		c.Assert(ids, jc.SameContents, expect)
+	}
+	assertVolumes := func(expect ...string) {
+		volIds, err := vs.ListVolumes()
+		c.Assert(err, jc.ErrorIsNil)
+		c.Assert(volIds, jc.SameContents, expect)
+	}
+	assertGroups := func(expect ...string) {
+		groupsResp, err := t.srv.client.SecurityGroups(nil, nil)
+		c.Assert(err, jc.ErrorIsNil)
+		names := make([]string, len(groupsResp.Groups))
+		for i, group := range groupsResp.Groups {
+			names[i] = group.Name
+		}
+		c.Assert(names, jc.SameContents, expect)
+	}
+
+	assertInstances(inst.Id())
+	assertVolumes(volumeResults[0].Volume.VolumeId)
+	assertGroups(
+		"default",
+		"juju-"+coretesting.ModelTag.Id(),
+		"juju-"+coretesting.ModelTag.Id()+"-0",
+		"juju-7e386e08-cba7-44a4-a76e-7c1633584210",
+		"juju-7e386e08-cba7-44a4-a76e-7c1633584210-global",
+	)
+
+	// Destroy the controller environment. This should destroy the hosted
+	// environment too.
+	err = controllerEnv.Destroy()
+	c.Assert(err, jc.ErrorIsNil)
+
+	assertInstances()
+	assertVolumes()
+	assertGroups("default")
 }
 
 // splitAuthKeys splits the given authorized keys
@@ -401,7 +586,7 @@ func (t *localServerSuite) testStartInstanceAvailZone(c *gc.C, zone string) (ins
 	c.Assert(err, jc.ErrorIsNil)
 
 	params := environs.StartInstanceParams{Placement: "zone=" + zone}
-	result, err := testing.StartInstanceWithParams(env, "1", params, nil)
+	result, err := testing.StartInstanceWithParams(env, "1", params)
 	if err != nil {
 		return nil, err
 	}
@@ -500,7 +685,7 @@ func (t *localServerSuite) TestStartInstanceDistributionParams(c *gc.C) {
 			return expectedInstances, nil
 		},
 	}
-	_, err = testing.StartInstanceWithParams(env, "1", params, nil)
+	_, err = testing.StartInstanceWithParams(env, "1", params)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(mock.group, gc.DeepEquals, expectedInstances)
 }
@@ -524,7 +709,7 @@ func (t *localServerSuite) TestStartInstanceDistributionErrors(c *gc.C) {
 			return nil, dgErr
 		},
 	}
-	_, err = testing.StartInstanceWithParams(env, "1", params, nil)
+	_, err = testing.StartInstanceWithParams(env, "1", params)
 	c.Assert(errors.Cause(err), gc.Equals, dgErr)
 }
 
@@ -662,7 +847,7 @@ func (t *localServerSuite) TestSpaceConstraintsSpaceNotInPlacementZone(c *gc.C) 
 			subIDs[2]: []string{"zone4"},
 		},
 	}
-	_, err := testing.StartInstanceWithParams(env, "1", params, nil)
+	_, err := testing.StartInstanceWithParams(env, "1", params)
 	c.Assert(err, gc.ErrorMatches, `unable to resolve constraints: space and/or subnet unavailable in zones \[test-available\]`)
 }
 
@@ -679,7 +864,7 @@ func (t *localServerSuite) TestSpaceConstraintsSpaceInPlacementZone(c *gc.C) {
 			subIDs[1]: []string{"zone3"},
 		},
 	}
-	_, err := testing.StartInstanceWithParams(env, "1", params, nil)
+	_, err := testing.StartInstanceWithParams(env, "1", params)
 	c.Assert(err, jc.ErrorIsNil)
 }
 
@@ -695,7 +880,7 @@ func (t *localServerSuite) TestSpaceConstraintsNoPlacement(c *gc.C) {
 			subIDs[1]: []string{"zone3"},
 		},
 	}
-	_, err := testing.StartInstanceWithParams(env, "1", params, nil)
+	_, err := testing.StartInstanceWithParams(env, "1", params)
 	c.Assert(err, jc.ErrorIsNil)
 }
 
@@ -713,7 +898,7 @@ func (t *localServerSuite) TestSpaceConstraintsNoAvailableSubnets(c *gc.C) {
 			subIDs[0]: []string{""},
 		},
 	}
-	_, err := testing.StartInstanceWithParams(env, "1", params, nil)
+	_, err := testing.StartInstanceWithParams(env, "1", params)
 	c.Assert(err, gc.ErrorMatches, `unable to resolve constraints: space and/or subnet unavailable in zones \[test-available\]`)
 }
 
@@ -1045,6 +1230,7 @@ func (t *localServerSuite) TestNetworkInterfaces(c *gc.C) {
 		Disabled:          false,
 		NoAutoStart:       false,
 		ConfigType:        network.ConfigDHCP,
+		InterfaceType:     network.EthernetInterface,
 		Address:           network.NewScopedAddress(addr, network.ScopeCloudLocal),
 		AvailabilityZones: zones,
 	}}
@@ -1220,6 +1406,7 @@ func (t *localServerSuite) TestInstanceTags(c *gc.C) {
 	c.Assert(ec2Inst.Tags, jc.SameContents, []amzec2.Tag{
 		{"Name", "juju-sample-machine-0"},
 		{"juju-model-uuid", coretesting.ModelTag.Id()},
+		{"juju-controller-uuid", coretesting.ModelTag.Id()},
 		{"juju-is-controller", "true"},
 	})
 }
@@ -1249,6 +1436,7 @@ func (t *localServerSuite) TestRootDiskTags(c *gc.C) {
 	c.Assert(found.Tags, jc.SameContents, []amzec2.Tag{
 		{"Name", "juju-sample-machine-0-root"},
 		{"juju-model-uuid", coretesting.ModelTag.Id()},
+		{"juju-controller-uuid", coretesting.ModelTag.Id()},
 	})
 }
 

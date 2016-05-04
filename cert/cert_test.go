@@ -16,6 +16,7 @@ import (
 	"time"
 
 	jc "github.com/juju/testing/checkers"
+	"github.com/juju/utils"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/cert"
@@ -68,7 +69,7 @@ func (certSuite) TestParseCertAndKey(c *gc.C) {
 func (certSuite) TestNewCA(c *gc.C) {
 	now := time.Now()
 	expiry := roundTime(now.AddDate(0, 0, 1))
-	caCertPEM, caKeyPEM, err := cert.NewCA("foo", expiry)
+	caCertPEM, caKeyPEM, err := cert.NewCA("foo", "1", expiry)
 	c.Assert(err, jc.ErrorIsNil)
 
 	caCert, caKey, err := cert.ParseCertAndKey(caCertPEM, caKeyPEM)
@@ -86,7 +87,7 @@ func (certSuite) TestNewCA(c *gc.C) {
 func (certSuite) TestNewServer(c *gc.C) {
 	now := time.Now()
 	expiry := roundTime(now.AddDate(1, 0, 0))
-	caCertPEM, caKeyPEM, err := cert.NewCA("foo", expiry)
+	caCertPEM, caKeyPEM, err := cert.NewCA("foo", "1", expiry)
 	c.Assert(err, jc.ErrorIsNil)
 
 	caCert, _, err := cert.ParseCertAndKey(caCertPEM, caKeyPEM)
@@ -100,7 +101,7 @@ func (certSuite) TestNewServer(c *gc.C) {
 func (certSuite) TestNewDefaultServer(c *gc.C) {
 	now := time.Now()
 	expiry := roundTime(now.AddDate(1, 0, 0))
-	caCertPEM, caKeyPEM, err := cert.NewCA("foo", expiry)
+	caCertPEM, caKeyPEM, err := cert.NewCA("foo", "1", expiry)
 	c.Assert(err, jc.ErrorIsNil)
 
 	caCert, _, err := cert.ParseCertAndKey(caCertPEM, caKeyPEM)
@@ -163,7 +164,7 @@ func (certSuite) TestNewServerHostnames(c *gc.C) {
 func (certSuite) TestWithNonUTCExpiry(c *gc.C) {
 	expiry, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", "2012-11-28 15:53:57 +0100 CET")
 	c.Assert(err, jc.ErrorIsNil)
-	certPEM, keyPEM, err := cert.NewCA("foo", expiry)
+	certPEM, keyPEM, err := cert.NewCA("foo", "1", expiry)
 	xcert, err := cert.ParseCert(certPEM)
 	c.Assert(err, jc.ErrorIsNil)
 	checkNotAfter(c, xcert, expiry)
@@ -185,7 +186,7 @@ func (certSuite) TestNewServerWithInvalidCert(c *gc.C) {
 
 func (certSuite) TestVerify(c *gc.C) {
 	now := time.Now()
-	caCert, caKey, err := cert.NewCA("foo", now.Add(1*time.Minute))
+	caCert, caKey, err := cert.NewCA("foo", "1", now.Add(1*time.Minute))
 	c.Assert(err, jc.ErrorIsNil)
 
 	var noHostnames []string
@@ -204,7 +205,7 @@ func (certSuite) TestVerify(c *gc.C) {
 	err = cert.Verify(srvCert, caCert, now.Add(2*time.Minute))
 	c.Check(err, gc.ErrorMatches, "x509: certificate has expired or is not yet valid")
 
-	caCert2, caKey2, err := cert.NewCA("bar", now.Add(1*time.Minute))
+	caCert2, caKey2, err := cert.NewCA("bar", "1", now.Add(1*time.Minute))
 	c.Assert(err, jc.ErrorIsNil)
 
 	// Check original server certificate against wrong CA.
@@ -237,14 +238,13 @@ func checkTLSConnection(c *gc.C, caCert, srvCert *x509.Certificate, srvKey *rsa.
 	var clientState tls.ConnectionState
 	done := make(chan error)
 	go func() {
-		config := tls.Config{
-			Certificates: []tls.Certificate{{
-				Certificate: [][]byte{srvCert.Raw},
-				PrivateKey:  srvKey,
-			}},
-		}
+		config := utils.SecureTLSConfig()
+		config.Certificates = []tls.Certificate{{
+			Certificate: [][]byte{srvCert.Raw},
+			PrivateKey:  srvKey,
+		}}
 
-		conn := tls.Server(p1, &config)
+		conn := tls.Server(p1, config)
 		defer conn.Close()
 		data, err := ioutil.ReadAll(conn)
 		c.Assert(err, jc.ErrorIsNil)
@@ -252,10 +252,10 @@ func checkTLSConnection(c *gc.C, caCert, srvCert *x509.Certificate, srvKey *rsa.
 		close(done)
 	}()
 
-	clientConn := tls.Client(p0, &tls.Config{
-		ServerName: "anyServer",
-		RootCAs:    clientCertPool,
-	})
+	tlsConfig := utils.SecureTLSConfig()
+	tlsConfig.ServerName = "anyServer"
+	tlsConfig.RootCAs = clientCertPool
+	clientConn := tls.Client(p0, tlsConfig)
 	defer clientConn.Close()
 
 	_, err := clientConn.Write([]byte(msg))

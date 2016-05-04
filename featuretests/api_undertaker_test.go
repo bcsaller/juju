@@ -62,7 +62,6 @@ func (s *undertakerSuite) TestStateEnvironInfo(c *gc.C) {
 	c.Assert(info.GlobalName, gc.Equals, "user-admin@local/admin")
 	c.Assert(info.IsSystem, jc.IsTrue)
 	c.Assert(info.Life, gc.Equals, params.Alive)
-	c.Assert(info.TimeOfDeath, gc.IsNil)
 }
 
 func (s *undertakerSuite) TestStateProcessDyingEnviron(c *gc.C) {
@@ -106,7 +105,6 @@ func (s *undertakerSuite) TestHostedEnvironInfo(c *gc.C) {
 	c.Assert(envInfo.GlobalName, gc.Equals, "user-admin@local/hosted_env")
 	c.Assert(envInfo.IsSystem, jc.IsFalse)
 	c.Assert(envInfo.Life, gc.Equals, params.Alive)
-	c.Assert(envInfo.TimeOfDeath, gc.IsNil)
 }
 
 func (s *undertakerSuite) TestHostedProcessDyingEnviron(c *gc.C) {
@@ -116,23 +114,19 @@ func (s *undertakerSuite) TestHostedProcessDyingEnviron(c *gc.C) {
 	err := undertakerClient.ProcessDyingModel()
 	c.Assert(err, gc.ErrorMatches, "model is not dying")
 
+	factory.NewFactory(otherSt).MakeService(c, nil)
 	env, err := otherSt.Model()
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(env.Destroy(), jc.ErrorIsNil)
 	c.Assert(env.Refresh(), jc.ErrorIsNil)
 	c.Assert(env.Life(), gc.Equals, state.Dying)
 
+	err = otherSt.Cleanup()
+	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(undertakerClient.ProcessDyingModel(), jc.ErrorIsNil)
 
 	c.Assert(env.Refresh(), jc.ErrorIsNil)
 	c.Assert(env.Life(), gc.Equals, state.Dead)
-
-	result, err := undertakerClient.ModelInfo()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(result, gc.NotNil)
-	c.Assert(result.Error, gc.IsNil)
-	info := result.Result
-	c.Assert(info.TimeOfDeath.IsZero(), jc.IsFalse)
 }
 
 func (s *undertakerSuite) TestWatchModelResources(c *gc.C) {
@@ -155,6 +149,7 @@ func (s *undertakerSuite) TestHostedRemoveEnviron(c *gc.C) {
 	err := undertakerClient.RemoveModel()
 	c.Assert(err, gc.ErrorMatches, "an error occurred, unable to remove model")
 
+	factory.NewFactory(otherSt).MakeService(c, nil)
 	env, err := otherSt.Model()
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(env.Destroy(), jc.ErrorIsNil)
@@ -163,6 +158,8 @@ func (s *undertakerSuite) TestHostedRemoveEnviron(c *gc.C) {
 	err = undertakerClient.RemoveModel()
 	c.Assert(err, gc.ErrorMatches, "an error occurred, unable to remove model")
 
+	err = otherSt.Cleanup()
+	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(undertakerClient.ProcessDyingModel(), jc.ErrorIsNil)
 
 	c.Assert(undertakerClient.RemoveModel(), jc.ErrorIsNil)

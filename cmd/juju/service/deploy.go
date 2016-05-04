@@ -7,6 +7,7 @@ import (
 	"archive/zip"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/juju/cmd"
@@ -23,12 +24,12 @@ import (
 	"github.com/juju/juju/api"
 	apiannotations "github.com/juju/juju/api/annotations"
 	apiservice "github.com/juju/juju/api/service"
+	"github.com/juju/juju/charmstore"
 	"github.com/juju/juju/cmd/juju/block"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/constraints"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/instance"
-	"github.com/juju/juju/juju/osenv"
 	"github.com/juju/juju/resource/resourceadapters"
 	"github.com/juju/juju/storage"
 )
@@ -66,9 +67,6 @@ type DeployCommand struct {
 	ServiceName  string
 	Config       cmd.FileVar
 	Constraints  constraints.Value
-	Networks     string // TODO(dimitern): Drop this in a follow-up and fix docs.
-	BumpRevision bool   // Remove this once the 1.16 support is dropped.
-	RepoPath     string // defaults to JUJU_REPOSITORY
 	BindToSpaces string
 
 	// TODO(axw) move this to UnitCommandBase once we support --storage
@@ -124,21 +122,10 @@ is not supported by the charm, this results in an error, unless --force is used.
 
    juju deploy /path/to/charm --series wily --force
 
-Deploying using a local repository is supported but deprecated.
-In this case, when the default-series is not specified in the
-model, one must specify the series. For example:
-  local:precise/mysql
+Local bundles are specified with a direct path to a bundle.yaml file.
+For example:
 
-Local bundles can be specified either with a local:bundle/<name> URL, which is
-interpreted relative to $JUJU_REPOSITORY, or with a direct path to a
-bundle.yaml file. For example, to deploy the bundle in
-$JUJU_REPOSITORY/bundle/openstack:
-
-  juju deploy local:bundle/openstack
-
-To deploy this using a direct path:
-
-  juju deploy $JUJU_REPOSITORY/bundle/openstack/bundle.yaml
+  juju deploy /path/to/bundle/openstack/bundle.yaml
 
 <service name>, if omitted, will be derived from <charm name>.
 
@@ -221,7 +208,7 @@ type DeployStep interface {
 // DeploymentInfo is used to maintain all deployment information for
 // deployment steps.
 type DeploymentInfo struct {
-	CharmURL    *charm.URL
+	CharmID     charmstore.CharmID
 	ServiceName string
 	ModelUUID   string
 }
@@ -238,7 +225,7 @@ func (c *DeployCommand) Info() *cmd.Info {
 var (
 	// charmOnlyFlags and bundleOnlyFlags are used to validate flags based on
 	// whether we are deploying a charm or a bundle.
-	charmOnlyFlags  = []string{"bind", "config", "constraints", "force", "n", "networks", "num-units", "series", "to", "u", "upgrade", "resource"}
+	charmOnlyFlags  = []string{"bind", "config", "constraints", "force", "n", "num-units", "series", "to", "resource"}
 	bundleOnlyFlags = []string{}
 )
 
@@ -247,13 +234,9 @@ func (c *DeployCommand) SetFlags(f *gnuflag.FlagSet) {
 	// new flags.
 	c.UnitCommandBase.SetFlags(f)
 	f.IntVar(&c.NumUnits, "n", 1, "number of service units to deploy for principal charms")
-	f.BoolVar(&c.BumpRevision, "u", false, "increment local charm directory revision (DEPRECATED)")
-	f.BoolVar(&c.BumpRevision, "upgrade", false, "")
 	f.StringVar((*string)(&c.Channel), "channel", "", "channel to use when getting the charm or bundle from the charm store")
 	f.Var(&c.Config, "config", "path to yaml-formatted service config")
 	f.Var(constraints.ConstraintsValue{Target: &c.Constraints}, "constraints", "set service constraints")
-	f.StringVar(&c.Networks, "networks", "", "deprecated and ignored: use space constraints instead.")
-	f.StringVar(&c.RepoPath, "repository", os.Getenv(osenv.JujuRepositoryEnvKey), "local charm repository")
 	f.StringVar(&c.Series, "series", "", "the series on which to deploy")
 	f.BoolVar(&c.Force, "force", false, "allow a charm to be deployed to a machine running an unsupported series")
 	f.Var(storageFlag{&c.Storage, &c.BundleStorage}, "storage", "charm storage constraints")
@@ -305,20 +288,48 @@ var getClientConfig = func(client ModelConfigGetter) (*config.Config, error) {
 	return config.New(config.NoDefaults, attrs)
 }
 
+func (c *DeployCommand) maybeReadLocalBundleData(ctx *cmd.Context) (
+	_ *charm.BundleData, bundleFile string, bundleFilePath string, _ error,
+) {
+	bundleFile = c.CharmOrBundle
+	bundleData, err := charmrepo.ReadBundleFile(bundleFile)
+	if err == nil {
+		// For local bundles, we extract the local path of
+		// the bundle directory.
+		bundleFilePath = filepath.Dir(ctx.AbsPath(bundleFile))
+	} else {
+		// We may have been given a local bundle archive or exploded directory.
+		if bundle, burl, pathErr := charmrepo.NewBundleAtPath(bundleFile); pathErr == nil {
+			bundleData = bundle.Data()
+			bundleFile = burl.String()
+			if info, err := os.Stat(bundleFile); err == nil && info.IsDir() {
+				bundleFilePath = bundleFile
+			}
+			err = nil
+		} else {
+			err = pathErr
+		}
+	}
+	return bundleData, bundleFile, bundleFilePath, err
+}
+
 func (c *DeployCommand) deployCharmOrBundle(ctx *cmd.Context, client *api.Client) error {
 	deployer := serviceDeployer{ctx, c}
 
 	// We may have been given a local bundle file.
-	bundlePath := c.CharmOrBundle
-	bundleData, err := charmrepo.ReadBundleFile(bundlePath)
+	bundleData, bundleIdent, bundleFilePath, err := c.maybeReadLocalBundleData(ctx)
+	// If the bundle files existed but we couldn't read them, then
+	// return that error rather than trying to interpret as a charm.
 	if err != nil {
-		// We may have been given a local bundle archive or exploded directory.
-		if bundle, burl, pathErr := charmrepo.NewBundleAtPath(bundlePath); pathErr == nil {
-			bundleData = bundle.Data()
-			bundlePath = burl.String()
-			err = pathErr
+		if info, statErr := os.Stat(c.CharmOrBundle); statErr == nil {
+			if info.IsDir() {
+				if _, ok := err.(*charmrepo.NotFoundError); !ok {
+					return err
+				}
+			}
 		}
 	}
+
 	// If not a bundle then maybe a local charm.
 	if err != nil {
 		// Charm may have been supplied via a path reference.
@@ -327,8 +338,19 @@ func (c *DeployCommand) deployCharmOrBundle(ctx *cmd.Context, client *api.Client
 			if curl, charmErr = client.AddLocalCharm(curl, ch); charmErr != nil {
 				return charmErr
 			}
+			id := charmstore.CharmID{
+				URL: curl,
+				// Local charms don't need a channel.
+			}
 			var csMac *macaroon.Macaroon // local charms don't need one.
-			return c.deployCharm(curl, csMac, curl.Series, ctx, client, &deployer)
+			return c.deployCharm(deployCharmArgs{
+				id:       id,
+				csMac:    csMac,
+				series:   curl.Series,
+				ctx:      ctx,
+				client:   client,
+				deployer: &deployer,
+			})
 		}
 		// We check for several types of known error which indicate
 		// that the supplied reference was indeed a path but there was
@@ -344,18 +366,15 @@ func (c *DeployCommand) deployCharmOrBundle(ctx *cmd.Context, client *api.Client
 		}
 		err = charmErr
 	}
-	if err != nil {
-		if _, ok := errors.Cause(err).(*charmrepo.NotFoundError); ok {
-			return errors.Errorf("no charm or bundle found at %q: %v", c.CharmOrBundle, err)
-		}
-		if errors.Cause(err) != os.ErrNotExist {
-			return err
-		}
-		// We've got a "not exists" error. Attempt to interpret the supplied
-		// charm or bundle reference as a URL.
+	if _, ok := err.(*charmrepo.NotFoundError); ok {
+		return errors.Errorf("no charm or bundle found at %q", c.CharmOrBundle)
+	}
+	// If we get a "not exists" error then we attempt to interpret the supplied
+	// charm or bundle reference as a URL below, otherwise we return the error.
+	if err != nil && err != os.ErrNotExist {
+		return err
 	}
 
-	repoPath := ctx.AbsPath(c.RepoPath)
 	conf, err := getClientConfig(client)
 	if err != nil {
 		return err
@@ -367,29 +386,29 @@ func (c *DeployCommand) deployCharmOrBundle(ctx *cmd.Context, client *api.Client
 	}
 	csClient := newCharmStoreClient(bakeryClient).WithChannel(c.Channel)
 
-	resolver := newCharmURLResolver(conf, csClient, repoPath)
+	resolver := newCharmURLResolver(conf, csClient)
 
-	var charmOrBundleURL *charm.URL
-	var repo charmrepo.Interface
+	var storeCharmOrBundleURL *charm.URL
+	var store *charmrepo.CharmStore
 	var supportedSeries []string
 	// If we don't already have a bundle loaded, we try the charm store for a charm or bundle.
 	if bundleData == nil {
 		// Charm or bundle has been supplied as a URL so we resolve and deploy using the store.
-		charmOrBundleURL, supportedSeries, repo, err = resolver.resolve(c.CharmOrBundle)
+		storeCharmOrBundleURL, c.Channel, supportedSeries, store, err = resolver.resolve(c.CharmOrBundle)
 		if charm.IsUnsupportedSeriesError(err) {
 			return errors.Errorf("%v. Use --force to deploy the charm anyway.", err)
 		}
 		if err != nil {
 			return errors.Trace(err)
 		}
-		if charmOrBundleURL.Series == "bundle" {
+		if storeCharmOrBundleURL.Series == "bundle" {
 			// Load the bundle entity.
-			bundle, err := repo.GetBundle(charmOrBundleURL)
+			bundle, err := store.GetBundle(storeCharmOrBundleURL)
 			if err != nil {
 				return errors.Trace(err)
 			}
 			bundleData = bundle.Data()
-			bundlePath = charmOrBundleURL.String()
+			bundleIdent = storeCharmOrBundleURL.String()
 		}
 	}
 	// Handle a bundle.
@@ -399,11 +418,11 @@ func (c *DeployCommand) deployCharmOrBundle(ctx *cmd.Context, client *api.Client
 		}
 		// TODO(ericsnow) Do something with the CS macaroons that were returned?
 		if _, err := deployBundle(
-			bundleData, client, &deployer, resolver, ctx, c.BundleStorage,
+			bundleFilePath, bundleData, c.Channel, client, &deployer, resolver, ctx, c.BundleStorage,
 		); err != nil {
 			return errors.Trace(err)
 		}
-		ctx.Infof("deployment of bundle %q completed", bundlePath)
+		ctx.Infof("deployment of bundle %q completed", bundleIdent)
 		return nil
 	}
 	// Handle a charm.
@@ -411,35 +430,55 @@ func (c *DeployCommand) deployCharmOrBundle(ctx *cmd.Context, client *api.Client
 		return errors.Errorf("Flags provided but not supported when deploying a charm: %s.", strings.Join(flags, ", "))
 	}
 	// Get the series to use.
-	series, message, err := charmSeries(c.Series, charmOrBundleURL.Series, supportedSeries, c.Force, conf)
+	series, message, err := charmSeries(c.Series, storeCharmOrBundleURL.Series, supportedSeries, c.Force, conf, deployFromCharm)
 	if charm.IsUnsupportedSeriesError(err) {
 		return errors.Errorf("%v. Use --force to deploy the charm anyway.", err)
 	}
 	// Store the charm in state.
-	curl, csMac, err := addCharmFromURL(client, charmOrBundleURL, repo)
+	curl, csMac, err := addCharmFromURL(client, storeCharmOrBundleURL, c.Channel, csClient)
 	if err != nil {
 		if err1, ok := errors.Cause(err).(*termsRequiredError); ok {
 			terms := strings.Join(err1.Terms, " ")
 			return errors.Errorf(`Declined: please agree to the following terms %s. Try: "juju agree %s"`, terms, terms)
 		}
-		return errors.Annotatef(err, "storing charm for URL %q", charmOrBundleURL)
+		return errors.Annotatef(err, "storing charm for URL %q", storeCharmOrBundleURL)
 	}
 	ctx.Infof("Added charm %q to the model.", curl)
 	ctx.Infof("Deploying charm %q %v.", curl, fmt.Sprintf(message, series))
-	return c.deployCharm(curl, csMac, series, ctx, client, &deployer)
+	id := charmstore.CharmID{
+		URL:     curl,
+		Channel: c.Channel,
+	}
+	return c.deployCharm(deployCharmArgs{
+		id:       id,
+		csMac:    csMac,
+		series:   series,
+		ctx:      ctx,
+		client:   client,
+		deployer: &deployer,
+	})
 }
 
 const (
 	msgUserRequestedSeries = "with the user specified series %q"
+	msgBundleSeries        = "with the series %q defined by the bundle"
 	msgSingleCharmSeries   = "with the charm series %q"
 	msgDefaultCharmSeries  = "with the default charm metadata series %q"
 	msgDefaultModelSeries  = "with the configured model default series %q"
 	msgLatestLTSSeries     = "with the latest LTS series %q"
 )
 
+const (
+	// deployFromBundle is passed to charmSeries when deploying from a bundle.
+	deployFromBundle = true
+
+	// deployFromCharm is passed to charmSeries when deploying a charm.
+	deployFromCharm = false
+)
+
 // charmSeries determine what series to use with a charm.
 // Order of preference is:
-// - user requested when deploying
+// - user requested or defined by bundle when deploying
 // - default from charm metadata supported series
 // - model default
 // - charm store default
@@ -448,13 +487,18 @@ func charmSeries(
 	supportedSeries []string,
 	force bool,
 	conf *config.Config,
+	fromBundle bool,
 ) (string, string, error) {
 	// User has requested a series and we have a new charm with series in metadata.
 	if requestedSeries != "" && seriesFromCharm == "" {
 		if !force && !isSeriesSupported(requestedSeries, supportedSeries) {
 			return "", "", charm.NewUnsupportedSeriesError(requestedSeries, supportedSeries)
 		}
-		return requestedSeries, msgUserRequestedSeries, nil
+		if fromBundle {
+			return requestedSeries, msgBundleSeries, nil
+		} else {
+			return requestedSeries, msgUserRequestedSeries, nil
+		}
 	}
 
 	// User has requested a series and it's an old charm for a single series.
@@ -463,7 +507,11 @@ func charmSeries(
 			return "", "", charm.NewUnsupportedSeriesError(requestedSeries, []string{seriesFromCharm})
 		}
 		if requestedSeries != "" {
-			return requestedSeries, msgUserRequestedSeries, nil
+			if fromBundle {
+				return requestedSeries, msgBundleSeries, nil
+			} else {
+				return requestedSeries, msgUserRequestedSeries, nil
+			}
 		}
 		return seriesFromCharm, msgSingleCharmSeries, nil
 	}
@@ -489,15 +537,17 @@ func charmSeries(
 	return latestLtsSeries, msgLatestLTSSeries, nil
 }
 
-func (c *DeployCommand) deployCharm(
-	curl *charm.URL, csMac *macaroon.Macaroon, series string, ctx *cmd.Context,
-	client *api.Client, deployer *serviceDeployer,
-) (rErr error) {
-	if c.BumpRevision {
-		ctx.Infof("--upgrade (or -u) is deprecated and ignored; charms are always deployed with a unique revision.")
-	}
+type deployCharmArgs struct {
+	id       charmstore.CharmID
+	csMac    *macaroon.Macaroon
+	series   string
+	ctx      *cmd.Context
+	client   *api.Client
+	deployer *serviceDeployer
+}
 
-	charmInfo, err := client.CharmInfo(curl.String())
+func (c *DeployCommand) deployCharm(args deployCharmArgs) (rErr error) {
+	charmInfo, err := args.client.CharmInfo(args.id.URL.String())
 	if err != nil {
 		return err
 	}
@@ -520,7 +570,7 @@ func (c *DeployCommand) deployCharm(
 
 	var configYAML []byte
 	if c.Config.Path != "" {
-		configYAML, err = c.Config.Read(ctx)
+		configYAML, err = c.Config.Read(args.ctx)
 		if err != nil {
 			return err
 		}
@@ -536,13 +586,13 @@ func (c *DeployCommand) deployCharm(
 	}
 
 	deployInfo := DeploymentInfo{
-		CharmURL:    curl,
+		CharmID:     args.id,
 		ServiceName: serviceName,
-		ModelUUID:   client.ModelUUID(),
+		ModelUUID:   args.client.ModelUUID(),
 	}
 
 	for _, step := range c.Steps {
-		err = step.RunPre(state, bakeryClient, ctx, deployInfo)
+		err = step.RunPre(state, bakeryClient, args.ctx, deployInfo)
 		if err != nil {
 			return err
 		}
@@ -550,44 +600,43 @@ func (c *DeployCommand) deployCharm(
 
 	defer func() {
 		for _, step := range c.Steps {
-			err = step.RunPost(state, bakeryClient, ctx, deployInfo, rErr)
+			err = step.RunPost(state, bakeryClient, args.ctx, deployInfo, rErr)
 			if err != nil {
 				rErr = err
 			}
 		}
 	}()
 
-	if len(charmInfo.Meta.Terms) > 0 {
-		ctx.Infof("Deployment under prior agreement to terms: %s",
+	if args.id.URL != nil && args.id.URL.Schema != "local" && len(charmInfo.Meta.Terms) > 0 {
+		args.ctx.Infof("Deployment under prior agreement to terms: %s",
 			strings.Join(charmInfo.Meta.Terms, " "))
 	}
 
-	ids, err := handleResources(c, c.Resources, serviceName, curl, csMac, charmInfo.Meta.Resources)
+	ids, err := handleResources(c, c.Resources, serviceName, args.id, args.csMac, charmInfo.Meta.Resources)
 	if err != nil {
 		return errors.Trace(err)
 	}
 
 	params := serviceDeployParams{
-		charmURL:      curl.String(),
+		charmID:       args.id,
 		serviceName:   serviceName,
-		series:        series,
+		series:        args.series,
 		numUnits:      numUnits,
 		configYAML:    string(configYAML),
 		constraints:   c.Constraints,
 		placement:     c.Placement,
-		networks:      c.Networks,
 		storage:       c.Storage,
 		spaceBindings: c.Bindings,
 		resources:     ids,
 	}
-	return deployer.serviceDeploy(params)
+	return args.deployer.serviceDeploy(params)
 }
 
 type APICmd interface {
 	NewAPIRoot() (api.Connection, error)
 }
 
-func handleResources(c APICmd, resources map[string]string, serviceName string, cURL *charm.URL, csMac *macaroon.Macaroon, metaResources map[string]charmresource.Meta) (map[string]string, error) {
+func handleResources(c APICmd, resources map[string]string, serviceName string, chID charmstore.CharmID, csMac *macaroon.Macaroon, metaResources map[string]charmresource.Meta) (map[string]string, error) {
 	if len(resources) == 0 && len(metaResources) == 0 {
 		return nil, nil
 	}
@@ -597,7 +646,7 @@ func handleResources(c APICmd, resources map[string]string, serviceName string, 
 		return nil, errors.Trace(err)
 	}
 
-	ids, err := resourceadapters.DeployResources(serviceName, cURL, csMac, resources, metaResources, api)
+	ids, err := resourceadapters.DeployResources(serviceName, chID, csMac, resources, metaResources, api)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -651,14 +700,13 @@ func (c *DeployCommand) parseBind() error {
 }
 
 type serviceDeployParams struct {
-	charmURL      string
+	charmID       charmstore.CharmID
 	serviceName   string
 	series        string
 	numUnits      int
 	configYAML    string
 	constraints   constraints.Value
 	placement     []*instance.Placement
-	networks      string
 	storage       map[string]storage.Constraints
 	spaceBindings map[string]string
 	resources     map[string]string
@@ -686,12 +734,6 @@ func (d *serviceDeployer) newAnnotationsAPIClient() (*apiannotations.Client, err
 }
 
 func (c *serviceDeployer) serviceDeploy(args serviceDeployParams) error {
-	if len(args.networks) > 0 {
-		c.ctx.Infof(
-			"use of --networks is deprecated and is ignored. " +
-				"Please use spaces to manage placement within networks",
-		)
-	}
 	serviceClient, err := c.newServiceAPIClient()
 	if err != nil {
 		return err
@@ -705,17 +747,16 @@ func (c *serviceDeployer) serviceDeploy(args serviceDeployParams) error {
 	}
 
 	clientArgs := apiservice.DeployArgs{
-		args.charmURL,
-		args.serviceName,
-		args.series,
-		args.numUnits,
-		args.configYAML,
-		args.constraints,
-		args.placement,
-		[]string{},
-		args.storage,
-		args.spaceBindings,
-		args.resources,
+		CharmID:          args.charmID,
+		ServiceName:      args.serviceName,
+		Series:           args.series,
+		NumUnits:         args.numUnits,
+		ConfigYAML:       args.configYAML,
+		Cons:             args.constraints,
+		Placement:        args.placement,
+		Storage:          args.storage,
+		EndpointBindings: args.spaceBindings,
+		Resources:        args.resources,
 	}
 
 	return serviceClient.Deploy(clientArgs)
