@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/juju/errors"
-	"github.com/juju/names"
 	"github.com/juju/retry"
 	"github.com/juju/utils"
 	"github.com/juju/utils/arch"
@@ -20,6 +19,7 @@ import (
 	"gopkg.in/amz.v3/aws"
 	"gopkg.in/amz.v3/ec2"
 	"gopkg.in/amz.v3/s3"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/cloudconfig/instancecfg"
 	"github.com/juju/juju/cloudconfig/providerinit"
@@ -471,7 +471,7 @@ func (e *environ) StartInstance(args environs.StartInstanceParams) (_ *environs.
 	}
 
 	if spec.InstanceType.Deprecated {
-		logger.Warningf("deprecated instance type specified: %s", spec.InstanceType.Name)
+		logger.Infof("deprecated instance type specified: %s", spec.InstanceType.Name)
 	}
 
 	if err := args.InstanceConfig.SetTools(tools); err != nil {
@@ -519,15 +519,17 @@ func (e *environ) StartInstance(args environs.StartInstanceParams) (_ *environs.
 		ImageId:             spec.Image.Id,
 	}
 
+	haveVPCID := isVPCIDSet(e.ecfg().vpcID())
+
 	for _, zone := range availabilityZones {
 		runArgs := commonRunArgs
 		runArgs.AvailZone = zone
 
 		var subnetIDsForZone []string
 		var subnetErr error
-		if e.ecfg().vpcID() != "" && !args.Constraints.HaveSpaces() {
+		if haveVPCID && !args.Constraints.HaveSpaces() {
 			subnetIDsForZone, subnetErr = getVPCSubnetIDsForAvailabilityZone(e.ec2(), e.ecfg().vpcID(), zone)
-		} else if e.ecfg().vpcID() == "" && args.Constraints.HaveSpaces() {
+		} else if !haveVPCID && args.Constraints.HaveSpaces() {
 			subnetIDsForZone, subnetErr = findSubnetIDsForAvailabilityZone(zone, args.SubnetsToZones)
 		}
 
@@ -572,9 +574,14 @@ func (e *environ) StartInstance(args environs.StartInstanceParams) (_ *environs.
 		e:        e,
 		Instance: &instResp.Instances[0],
 	}
-	instAZ, instSubnet := inst.Instance.AvailZone, inst.Instance.SubnetId
-	chosenVPCID := e.ecfg().vpcID()
-	logger.Infof("started instance %q in AZ %q, subnet %q, VPC %q", inst.Id(), instAZ, instSubnet, chosenVPCID)
+	instAZ := inst.Instance.AvailZone
+	if haveVPCID {
+		instVPC := e.ecfg().vpcID()
+		instSubnet := inst.Instance.SubnetId
+		logger.Infof("started instance %q in AZ %q, subnet %q, VPC %q", inst.Id(), instAZ, instSubnet, instVPC)
+	} else {
+		logger.Infof("started instance %q in AZ %q", inst.Id(), instAZ)
+	}
 
 	// Tag instance, for accounting and identification.
 	instanceName := resourceName(
@@ -915,7 +922,7 @@ func (e *environ) NetworkInterfaces(instId instance.Id) ([]network.InterfaceInfo
 		networkInterfacesResp, err = ec2Client.NetworkInterfaces(nil, filter)
 		logger.Tracef("instance %q NICs: %#v (err: %v)", instId, networkInterfacesResp, err)
 		if err != nil {
-			logger.Warningf("failed to get instance %q interfaces: %v (retrying)", instId, err)
+			logger.Errorf("failed to get instance %q interfaces: %v (retrying)", instId, err)
 			continue
 		}
 		if len(networkInterfacesResp.Interfaces) == 0 {
@@ -966,14 +973,12 @@ func (e *environ) NetworkInterfaces(instId instance.Id) ([]network.InterfaceInfo
 func makeSubnetInfo(cidr string, subnetId network.Id, availZones []string) (network.SubnetInfo, error) {
 	ip, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
-		logger.Warningf("skipping subnet %q, invalid CIDR: %v", cidr, err)
-		return network.SubnetInfo{}, err
+		return network.SubnetInfo{}, errors.Annotatef(err, "skipping subnet %q, invalid CIDR", cidr)
 	}
 	// ec2 only uses IPv4 addresses for subnets
 	start, err := network.IPv4ToDecimal(ip)
 	if err != nil {
-		logger.Warningf("skipping subnet %q, invalid IP: %v", cidr, err)
-		return network.SubnetInfo{}, err
+		return network.SubnetInfo{}, errors.Annotatef(err, "skipping subnet %q, invalid IP", cidr)
 	}
 	// First four addresses in a subnet are reserved, see
 	// http://goo.gl/rrWTIo
@@ -1329,7 +1334,7 @@ func (e *environ) portsInGroup(name string) (ports []network.PortRange, err erro
 	}
 	for _, p := range group.IPPerms {
 		if len(p.SourceIPs) != 1 {
-			logger.Warningf("unexpected IP permission found: %v", p)
+			logger.Errorf("expected exactly one IP permission, found: %v", p)
 			continue
 		}
 		ports = append(ports, network.PortRange{
@@ -1344,11 +1349,10 @@ func (e *environ) portsInGroup(name string) (ports []network.PortRange, err erro
 
 func (e *environ) OpenPorts(ports []network.PortRange) error {
 	if e.Config().FirewallMode() != config.FwGlobal {
-		return fmt.Errorf("invalid firewall mode %q for opening ports on model",
-			e.Config().FirewallMode())
+		return errors.Errorf("invalid firewall mode %q for opening ports on model", e.Config().FirewallMode())
 	}
 	if err := e.openPortsInGroup(e.globalGroupName(), ports); err != nil {
-		return err
+		return errors.Trace(err)
 	}
 	logger.Infof("opened ports in global group: %v", ports)
 	return nil
@@ -1356,11 +1360,10 @@ func (e *environ) OpenPorts(ports []network.PortRange) error {
 
 func (e *environ) ClosePorts(ports []network.PortRange) error {
 	if e.Config().FirewallMode() != config.FwGlobal {
-		return fmt.Errorf("invalid firewall mode %q for closing ports on model",
-			e.Config().FirewallMode())
+		return errors.Errorf("invalid firewall mode %q for closing ports on model", e.Config().FirewallMode())
 	}
 	if err := e.closePortsInGroup(e.globalGroupName(), ports); err != nil {
-		return err
+		return errors.Trace(err)
 	}
 	logger.Infof("closed ports in global group: %v", ports)
 	return nil
@@ -1368,8 +1371,7 @@ func (e *environ) ClosePorts(ports []network.PortRange) error {
 
 func (e *environ) Ports() ([]network.PortRange, error) {
 	if e.Config().FirewallMode() != config.FwGlobal {
-		return nil, fmt.Errorf("invalid firewall mode %q for retrieving ports from model",
-			e.Config().FirewallMode())
+		return nil, errors.Errorf("invalid firewall mode %q for retrieving ports from model", e.Config().FirewallMode())
 	}
 	return e.portsInGroup(e.globalGroupName())
 }
@@ -1507,7 +1509,8 @@ func (e *environ) deleteSecurityGroupsForInstances(ids []instance.Id) {
 	// instances that have been successfully terminated.
 	securityGroups, err := e.instanceSecurityGroups(ids, "shutting-down", "terminated")
 	if err != nil {
-		logger.Warningf("cannot determine security groups to delete: %v", err)
+		logger.Errorf("cannot determine security groups to delete: %v", err)
+		return
 	}
 
 	// TODO(perrito666) we need to tag global security groups to be able
@@ -1529,7 +1532,7 @@ func (e *environ) deleteSecurityGroupsForInstances(ids []instance.Id) {
 			// In this case, our failure to delete security group is reasonable: it's still in use.
 			// 2. Some security groups may be shared by multiple instances,
 			// for example, global firewalling. We should not delete these.
-			logger.Warningf("provider failure: %v", err)
+			logger.Errorf("provider failure: %v", err)
 		}
 	}
 }
@@ -1563,8 +1566,7 @@ var deleteSecurityGroupInsistently = func(inst SecurityGroupCleaner, group ec2.S
 		},
 	})
 	if err != nil {
-		logger.Warningf("cannot delete security group %q: consider deleting it manually", group.Name)
-		return lastErr
+		return errors.Annotatef(lastErr, "cannot delete security group %q: consider deleting it manually", group.Name)
 	}
 	return nil
 }
@@ -1652,25 +1654,19 @@ var zeroGroup ec2.SecurityGroup
 // groupName or with filter by vpc-id and group-name, depending on whether
 // vpc-id is empty or not.
 func (e *environ) securityGroupsByNameOrID(groupName string) (*ec2.SecurityGroupsResp, error) {
-	var (
-		filter *ec2.Filter
-		groups []ec2.SecurityGroup
-	)
-
-	chosenVPCID := e.ecfg().vpcID()
-	if chosenVPCID != "" {
+	if chosenVPCID := e.ecfg().vpcID(); isVPCIDSet(chosenVPCID) {
 		// AWS VPC API requires both of these filters (and no
 		// group names/ids set) for non-default EC2-VPC groups:
-		filter = ec2.NewFilter()
+		filter := ec2.NewFilter()
 		filter.Add("vpc-id", chosenVPCID)
 		filter.Add("group-name", groupName)
-	} else {
-		// EC2-Classic or EC2-VPC with implicit default VPC need to use the
-		// GroupName.X arguments instead of the filters.
-		groups = ec2.SecurityGroupNames(groupName)
+		return e.ec2().SecurityGroups(nil, filter)
 	}
 
-	return e.ec2().SecurityGroups(groups, filter)
+	// EC2-Classic or EC2-VPC with implicit default VPC need to use the
+	// GroupName.X arguments instead of the filters.
+	groups := ec2.SecurityGroupNames(groupName)
+	return e.ec2().SecurityGroups(groups, nil)
 }
 
 // ensureGroup returns the security group with name and perms.
@@ -1679,13 +1675,18 @@ func (e *environ) securityGroupsByNameOrID(groupName string) (*ec2.SecurityGroup
 // Any entries in perms without SourceIPs will be granted for
 // the named group only.
 func (e *environ) ensureGroup(name string, perms []ec2.IPPerm) (g ec2.SecurityGroup, err error) {
-	// Specify explicit VPC ID if needed (not for default VPC).
+	// Specify explicit VPC ID if needed (not for default VPC or EC2-classic).
 	chosenVPCID := e.ecfg().vpcID()
+	inVPCLogSuffix := fmt.Sprintf(" (in VPC %q)", chosenVPCID)
+	if !isVPCIDSet(chosenVPCID) {
+		chosenVPCID = ""
+		inVPCLogSuffix = ""
+	}
 
 	ec2inst := e.ec2()
 	resp, err := ec2inst.CreateSecurityGroup(chosenVPCID, name, "juju group")
 	if err != nil && ec2ErrCode(err) != "InvalidGroup.Duplicate" {
-		err = errors.Annotatef(err, "creating security group %q (in VPC %q)", name, chosenVPCID)
+		err = errors.Annotatef(err, "creating security group %q%s", name, inVPCLogSuffix)
 		return zeroGroup, err
 	}
 
@@ -1702,15 +1703,15 @@ func (e *environ) ensureGroup(name string, perms []ec2.IPPerm) (g ec2.SecurityGr
 		if err := tagResources(ec2inst, tags, g.Id); err != nil {
 			return g, errors.Annotate(err, "tagging security group")
 		}
-		logger.Debugf("created security group %q in VPC %q with ID %q", name, chosenVPCID, g.Id)
+		logger.Debugf("created security group %q with ID %q%s", name, g.Id, inVPCLogSuffix)
 	} else {
 		resp, err := e.securityGroupsByNameOrID(name)
 		if err != nil {
-			err = errors.Annotatef(err, "fetching security group %q (in VPC %q)", name, chosenVPCID)
+			err = errors.Annotatef(err, "fetching security group %q%s", name, inVPCLogSuffix)
 			return zeroGroup, err
 		}
 		if len(resp.Groups) == 0 {
-			return zeroGroup, errors.NotFoundf("security group %q in VPC %q", name, chosenVPCID)
+			return zeroGroup, errors.NotFoundf("security group %q%s", name, inVPCLogSuffix)
 		}
 		info := resp.Groups[0]
 		// It's possible that the old group has the wrong
@@ -1731,7 +1732,7 @@ func (e *environ) ensureGroup(name string, perms []ec2.IPPerm) (g ec2.SecurityGr
 	if len(revoke) > 0 {
 		_, err := ec2inst.RevokeSecurityGroup(g, revoke.ipPerms())
 		if err != nil {
-			err = errors.Annotatef(err, "revoking security group %q (in VPC %q)", g.Id, chosenVPCID)
+			err = errors.Annotatef(err, "revoking security group %q%s", g.Id, inVPCLogSuffix)
 			return zeroGroup, err
 		}
 	}
@@ -1745,7 +1746,7 @@ func (e *environ) ensureGroup(name string, perms []ec2.IPPerm) (g ec2.SecurityGr
 	if len(add) > 0 {
 		_, err := ec2inst.AuthorizeSecurityGroup(g, add.ipPerms())
 		if err != nil {
-			err = errors.Annotatef(err, "authorizing security group %q (in VPC %q)", g.Id, chosenVPCID)
+			err = errors.Annotatef(err, "authorizing security group %q%s", g.Id, inVPCLogSuffix)
 			return zeroGroup, err
 		}
 	}
@@ -1870,6 +1871,6 @@ func ec2ErrCode(err error) string {
 	return ec2err.Code
 }
 
-func (e *environ) AllocateContainerAddresses(hostInstanceID instance.Id, preparedInfo []network.InterfaceInfo) ([]network.InterfaceInfo, error) {
+func (e *environ) AllocateContainerAddresses(hostInstanceID instance.Id, containerTag names.MachineTag, preparedInfo []network.InterfaceInfo) ([]network.InterfaceInfo, error) {
 	return nil, errors.NotSupportedf("container address allocation")
 }

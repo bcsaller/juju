@@ -12,10 +12,10 @@ import (
 
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
-	"github.com/juju/names"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/api"
 	apimachiner "github.com/juju/juju/api/machiner"
@@ -753,7 +753,7 @@ func (s *loginSuite) TestOtherEnvironmentWhenNotController(c *gc.C) {
 
 	err := st.Login(machine.Tag(), password, "nonce", nil)
 	c.Assert(errors.Cause(err), gc.DeepEquals, &rpc.RequestError{
-		Message: "invalid entity name or password",
+		Message: "permission denied",
 		Code:    "unauthorized access",
 	})
 }
@@ -767,7 +767,9 @@ func (s *loginSuite) assertRemoteEnvironment(c *gc.C, st api.Connection, expecte
 	client := st.Client()
 
 	// ModelUUID looks at the env tag on the api state connection.
-	c.Assert(client.ModelUUID(), gc.Equals, expected.Id())
+	uuid, err := client.ModelUUID()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(uuid, gc.Equals, expected.Id())
 
 	// ModelInfo calls a remote method that looks up the environment.
 	info, err := client.ModelInfo()

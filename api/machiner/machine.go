@@ -5,7 +5,7 @@ package machiner
 
 import (
 	"github.com/juju/errors"
-	"github.com/juju/names"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/api/common"
 	"github.com/juju/juju/apiserver/params"
@@ -46,7 +46,7 @@ func (m *Machine) SetStatus(status status.Status, info string, data map[string]i
 	var result params.ErrorResults
 	args := params.SetStatus{
 		Entities: []params.EntityStatusArgs{
-			{Tag: m.tag.String(), Status: status, Info: info, Data: data},
+			{Tag: m.tag.String(), Status: status.String(), Info: info, Data: data},
 		},
 	}
 	err := m.st.facade.FacadeCall("SetStatus", args, &result)
@@ -61,7 +61,7 @@ func (m *Machine) SetMachineAddresses(addresses []network.Address) error {
 	var result params.ErrorResults
 	args := params.SetMachinesAddresses{
 		MachineAddresses: []params.MachineAddresses{
-			{Tag: m.Tag().String(), Addresses: params.FromNetworkAddresses(addresses)},
+			{Tag: m.Tag().String(), Addresses: params.FromNetworkAddresses(addresses...)},
 		},
 	}
 	err := m.st.facade.FacadeCall("SetMachineAddresses", args, &result)

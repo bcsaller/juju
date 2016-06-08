@@ -7,14 +7,13 @@ import (
 	"time"
 
 	"github.com/juju/errors"
-	"github.com/juju/names"
 	gitjujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/apiserver/params"
 	"github.com/juju/juju/cmd/juju/model"
-	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/jujuclient"
 	"github.com/juju/juju/jujuclient/jujuclienttesting"
 	"github.com/juju/juju/status"
@@ -76,6 +75,7 @@ func (s *ShowCommandSuite) SetUpTest(c *gc.C) {
 		UUID:           testing.ModelTag.Id(),
 		ControllerUUID: "1ca2293b-fdb9-4299-97d6-55583bb39364",
 		OwnerTag:       "user-admin@local",
+		Cloud:          "canonistack",
 		ProviderType:   "openstack",
 		Life:           params.Alive,
 		Status: params.EntityStatus{
@@ -91,6 +91,7 @@ func (s *ShowCommandSuite) SetUpTest(c *gc.C) {
 			"model-uuid":      "deadbeef-0bad-400d-8000-4b1d0d06f00d",
 			"controller-uuid": "1ca2293b-fdb9-4299-97d6-55583bb39364",
 			"owner":           "admin@local",
+			"cloud":           "canonistack",
 			"type":            "openstack",
 			"life":            "alive",
 			"status": attrs{
@@ -111,14 +112,13 @@ func (s *ShowCommandSuite) SetUpTest(c *gc.C) {
 		},
 	}
 
-	err := modelcmd.WriteCurrentController("testing")
-	c.Assert(err, jc.ErrorIsNil)
 	s.store = jujuclienttesting.NewMemStore()
+	s.store.CurrentControllerName = "testing"
 	s.store.Controllers["testing"] = jujuclient.ControllerDetails{}
 	s.store.Accounts["testing"] = &jujuclient.ControllerAccounts{
 		CurrentAccount: "admin@local",
 	}
-	err = s.store.UpdateModel("testing", "admin@local", "mymodel", jujuclient.ModelDetails{
+	err := s.store.UpdateModel("testing", "admin@local", "mymodel", jujuclient.ModelDetails{
 		testing.ModelTag.Id(),
 	})
 	c.Assert(err, jc.ErrorIsNil)

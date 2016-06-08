@@ -18,7 +18,6 @@ import (
 
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
-	"github.com/juju/names"
 	"github.com/juju/utils"
 	"github.com/juju/utils/arch"
 	"github.com/juju/utils/keyvalues"
@@ -29,6 +28,7 @@ import (
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/cloudconfig/containerinit"
 	"github.com/juju/juju/cloudconfig/instancecfg"
+	"github.com/juju/juju/constraints"
 	"github.com/juju/juju/container"
 	"github.com/juju/juju/instance"
 	"github.com/juju/juju/status"
@@ -80,7 +80,7 @@ func containerDirFilesystem() (string, error) {
 }
 
 type containerManager struct {
-	name              string
+	namespace         instance.Namespace
 	logdir            string
 	createWithClone   bool
 	useAUFS           bool
@@ -101,10 +101,15 @@ func newContainerManager(
 	imageURLGetter container.ImageURLGetter,
 	loopDeviceManager looputil.LoopDeviceManager,
 ) (container.Manager, error) {
-	name := conf.PopValue(container.ConfigName)
-	if name == "" {
-		return nil, errors.Errorf("name is required")
+	modelUUID := conf.PopValue(container.ConfigModelUUID)
+	if modelUUID == "" {
+		return nil, errors.Errorf("model UUID is required")
 	}
+	namespace, err := instance.NewNamespace(modelUUID)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
 	logDir := conf.PopValue(container.ConfigLogDir)
 	if logDir == "" {
 		logDir = agent.DefaultPaths.LogDir
@@ -134,7 +139,7 @@ func newContainerManager(
 	logger.Tracef("backing filesystem: %q", backingFS)
 	conf.WarnAboutUnused()
 	return &containerManager{
-		name:              name,
+		namespace:         namespace,
 		logdir:            logDir,
 		createWithClone:   useClone,
 		useAUFS:           useAUFS,
@@ -161,9 +166,15 @@ func preferFastLXC(release string) bool {
 	return value >= 14.04
 }
 
+// Namespace implements container.Manager.
+func (manager *containerManager) Namespace() instance.Namespace {
+	return manager.namespace
+}
+
 // CreateContainer creates or clones an LXC container.
 func (manager *containerManager) CreateContainer(
 	instanceConfig *instancecfg.InstanceConfig,
+	cons constraints.Value,
 	series string,
 	networkConfig *container.NetworkConfig,
 	storageConfig *container.StorageConfig,
@@ -183,15 +194,16 @@ func (manager *containerManager) CreateContainer(
 	}
 
 	// Log how long the start took
+	// TODO(perrito666) 2016-05-02 lp:1558657
 	defer func(start time.Time) {
 		if err == nil {
 			logger.Tracef("container %q started: %v", inst.Id(), time.Now().Sub(start))
 		}
 	}(time.Now())
 
-	name := names.NewMachineTag(instanceConfig.MachineId).String()
-	if manager.name != "" {
-		name = fmt.Sprintf("%s-%s", manager.name, name)
+	name, err := manager.namespace.Hostname(instanceConfig.MachineId)
+	if err != nil {
+		return nil, nil, errors.Trace(err)
 	}
 
 	// Create the cloud-init.
@@ -252,9 +264,9 @@ func (manager *containerManager) CreateContainer(
 			return nil, nil, errors.Annotate(err, "failed to reorder network settings")
 		}
 
-		err = callback(status.StatusProvisioning, "Cloning template container", nil)
-		if err != nil {
-			logger.Warningf("Cannot set instance status for container: %v", err)
+		if err := callback(status.StatusProvisioning, "Cloning template container", nil); err != nil {
+			// if the callback fails, do not abort the operation.
+			logger.Errorf("Cannot set instance status for container: %v", err)
 		}
 		lxcContainer, err = templateContainer.Clone(name, extraCloneArgs, templateParams)
 		if err != nil {
@@ -788,11 +800,7 @@ func (manager *containerManager) ListContainers() (result []instance.Instance, e
 		logger.Errorf("failed getting all instances: %v", err)
 		return
 	}
-	managerPrefix := ""
-	if manager.name != "" {
-		managerPrefix = fmt.Sprintf("%s-", manager.name)
-	}
-
+	managerPrefix := manager.namespace.Prefix()
 	for _, container := range containers {
 		// Filter out those not starting with our name.
 		name := container.Name()
@@ -890,7 +898,7 @@ func networkConfigTemplate(config container.NetworkConfig) string {
 	case container.BridgeNetwork:
 		data.Type = "veth"
 	default:
-		logger.Warningf(
+		logger.Infof(
 			"unknown network type %q, using the default %q config",
 			config.NetworkType, container.BridgeNetwork,
 		)
@@ -916,7 +924,7 @@ func networkConfigTemplate(config container.NetworkConfig) string {
 			nic.IPv4Gateway = iface.GatewayAddress.Value
 		}
 		if iface.MACAddress == "" || nic.MACAddress == "" {
-			logger.Warningf(
+			logger.Infof(
 				"empty MAC address %q from config for %q (rendered as %q)",
 				iface.MACAddress, iface.InterfaceName, nic.MACAddress,
 			)
@@ -948,7 +956,7 @@ func networkConfigTemplate(config container.NetworkConfig) string {
 func generateNetworkConfig(config *container.NetworkConfig) string {
 	if config == nil {
 		config = DefaultNetworkConfig()
-		logger.Warningf("network type missing, using the default %q config", config.NetworkType)
+		logger.Infof("network type missing, using the default %q config", config.NetworkType)
 	}
 	return networkConfigTemplate(*config)
 }

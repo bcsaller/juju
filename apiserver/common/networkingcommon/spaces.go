@@ -5,7 +5,7 @@ package networkingcommon
 
 import (
 	"github.com/juju/errors"
-	"github.com/juju/names"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/apiserver/common"
 	"github.com/juju/juju/apiserver/params"
@@ -32,7 +32,7 @@ func SupportsSpaces(backing environ.ConfigGetter) error {
 	ok, err = netEnv.SupportsSpaces()
 	if !ok {
 		if err != nil && !errors.IsNotSupported(err) {
-			logger.Warningf("checking model spaces support failed with: %v", err)
+			logger.Errorf("checking model spaces support failed with: %v", err)
 		}
 		return errors.NotSupportedf("spaces")
 	}

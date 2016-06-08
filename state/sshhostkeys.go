@@ -5,7 +5,7 @@ package state
 
 import (
 	"github.com/juju/errors"
-	"github.com/juju/names"
+	"gopkg.in/juju/names.v2"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 	"gopkg.in/mgo.v2/txn"
@@ -38,9 +38,9 @@ func (st *State) GetSSHHostKeys(tag names.MachineTag) (SSHHostKeys, error) {
 	var doc sshHostKeysDoc
 	err := coll.FindId(machineGlobalKey(tag.Id())).One(&doc)
 	if err == mgo.ErrNotFound {
-		return nil, errors.NotFoundf("SSH host keys for %s", tag)
+		return nil, errors.NotFoundf("keys")
 	} else if err != nil {
-		return nil, errors.Annotate(err, "SSH host key lookup failed")
+		return nil, errors.Annotate(err, "key lookup failed")
 	}
 	return SSHHostKeys(doc.Keys), nil
 }

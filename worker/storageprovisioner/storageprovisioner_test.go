@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/juju/errors"
-	"github.com/juju/names"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/clock"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/apiserver/params"
 	"github.com/juju/juju/environs/config"
@@ -38,7 +38,6 @@ func (s *storageProvisionerSuite) SetUpTest(c *gc.C) {
 	s.AddCleanup(func(*gc.C) {
 		registry.RegisterProvider("dummy", nil)
 	})
-
 	s.managedFilesystemSource = nil
 	s.PatchValue(
 		storageprovisioner.NewManagedFilesystemSource,

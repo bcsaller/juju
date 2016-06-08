@@ -14,8 +14,9 @@ import (
 	"time"
 
 	"github.com/juju/errors"
+	"github.com/juju/juju/worker"
 	"github.com/juju/loggo"
-	"github.com/juju/names"
+	"gopkg.in/juju/names.v2"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 	"launchpad.net/tomb"
@@ -156,10 +157,19 @@ func NewWatcher(base *mgo.Collection, modelTag names.ModelTag) *Watcher {
 	return w
 }
 
+// Kill is part of the worker.Worker interface.
+func (w *Watcher) Kill() {
+	w.tomb.Kill(nil)
+}
+
+// Wait is part of the worker.Worker interface.
+func (w *Watcher) Wait() error {
+	return w.tomb.Wait()
+}
+
 // Stop stops all the watcher activities.
 func (w *Watcher) Stop() error {
-	w.tomb.Kill(nil)
-	return errors.Trace(w.tomb.Wait())
+	return worker.Stop(w)
 }
 
 // Dead returns a channel that is closed when the watcher has stopped.
@@ -343,14 +353,14 @@ func (w *Watcher) handle(req interface{}) {
 }
 
 type beingInfo struct {
-	DocID     string `bson:"_id,omitempty"`
+	DocID     string `bson:"_id"`
 	Seq       int64  `bson:"seq,omitempty"`
 	ModelUUID string `bson:"model-uuid,omitempty"`
 	Key       string `bson:"key,omitempty"`
 }
 
 type pingInfo struct {
-	DocID string           `bson:"_id,omitempty"`
+	DocID string           `bson:"_id"`
 	Slot  int64            `bson:"slot,omitempty"`
 	Alive map[string]int64 `bson:",omitempty"`
 	Dead  map[string]int64 `bson:",omitempty"`
@@ -386,6 +396,7 @@ func (w *Watcher) sync() error {
 			return errors.Trace(err)
 		}
 	}
+	// TODO(perrito666) 2016-05-02 lp:1558657
 	s := timeSlot(time.Now(), w.delta)
 	slot := docIDInt64(w.modelUUID, s)
 	previousSlot := docIDInt64(w.modelUUID, s-period)
@@ -395,7 +406,7 @@ func (w *Watcher) sync() error {
 	var ping []pingInfo
 	q := bson.D{{"$or", []pingInfo{{DocID: slot}, {DocID: previousSlot}}}}
 	err := pings.Find(q).All(&ping)
-	if err != nil && err == mgo.ErrNotFound {
+	if err != nil && err != mgo.ErrNotFound {
 		return errors.Trace(err)
 	}
 
@@ -456,7 +467,8 @@ func (w *Watcher) sync() error {
 					if err == mgo.ErrNotFound {
 						logger.Tracef("found seq=%d unowned", seq)
 						continue
-					} else if err != nil {
+					}
+					if err != nil {
 						return errors.Trace(err)
 					}
 				}
@@ -554,6 +566,11 @@ func (p *Pinger) Start() error {
 	return nil
 }
 
+// Kill is part of the worker.Worker interface.
+func (p *Pinger) Kill() {
+	p.tomb.Kill(nil)
+}
+
 // Wait returns when the Pinger has stopped, and returns the first error
 // it encountered.
 func (p *Pinger) Wait() error {
@@ -618,6 +635,7 @@ func (p *Pinger) killStopped() error {
 	if err := p.prepare(); err != nil {
 		return err
 	}
+	// TODO(perrito666) 2016-05-02 lp:1558657
 	slot := timeSlot(time.Now(), p.delta)
 	udoc := bson.D{
 		{"$set", bson.D{{"slot", slot}}},
@@ -700,6 +718,7 @@ func (p *Pinger) ping() (err error) {
 		}
 		p.delta = delta
 	}
+	// TODO(perrito666) 2016-05-02 lp:1558657
 	slot := timeSlot(time.Now(), p.delta)
 	if slot == p.lastSlot {
 		// Never, ever, ping the same slot twice.
@@ -737,8 +756,10 @@ func clockDelta(c *mgo.Collection) (time.Duration, error) {
 		if supportsMasterLocalTime {
 			// Try isMaster.localTime, which is present since MongoDB 2.2
 			// and does not require admin privileges.
+			// TODO(perrito666) 2016-05-02 lp:1558657
 			before = time.Now()
 			err := db.Run("isMaster", &isMaster)
+			// TODO(perrito666) 2016-05-02 lp:1558657
 			after = time.Now()
 			if err != nil {
 				return 0, errors.Trace(err)
@@ -763,8 +784,10 @@ func clockDelta(c *mgo.Collection) (time.Duration, error) {
 			// eval could take a relatively long time to acquire
 			// the lock and thus cause a retry on the callDelay
 			// check below on a busy server.
+			// TODO(perrito666) 2016-05-02 lp:1558657
 			before = time.Now()
 			err := db.Run(bson.D{{"$eval", "function() { return new Date(); }"}}, &server)
+			// TODO(perrito666) 2016-05-02 lp:1558657
 			after = time.Now()
 			if err != nil {
 				return 0, errors.Trace(err)

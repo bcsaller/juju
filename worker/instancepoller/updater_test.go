@@ -7,9 +7,9 @@ package instancepoller
 import (
 	"time"
 
-	"github.com/juju/names"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/apiserver/params"
 	"github.com/juju/juju/status"
@@ -97,7 +97,7 @@ func (s *updaterSuite) TestManualMachinesIgnored(c *gc.C) {
 		// Signal that we're in Status.
 		waitStatus <- struct{}{}
 		return params.StatusResult{
-			Status: status.StatusPending,
+			Status: status.StatusPending.String(),
 			Info:   "",
 			Data:   map[string]interface{}{},
 			Since:  nil,

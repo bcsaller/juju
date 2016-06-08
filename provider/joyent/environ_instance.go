@@ -12,8 +12,8 @@ import (
 	"github.com/joyent/gocommon/client"
 	"github.com/joyent/gosdc/cloudapi"
 	"github.com/juju/errors"
-	"github.com/juju/names"
 	"github.com/juju/utils/arch"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/cloudconfig/cloudinit"
 	"github.com/juju/juju/cloudconfig/instancecfg"
@@ -44,7 +44,7 @@ func newCompute(cfg *environConfig) (*joyentCompute, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := client.NewClient(cfg.sdcUrl(), cloudapi.DefaultAPIVersion, creds, &logger)
+	client := client.NewClient(cfg.sdcUrl(), cloudapi.DefaultAPIVersion, creds, newGoLogger())
 
 	return &joyentCompute{
 		ecfg:     cfg,

@@ -18,8 +18,6 @@ import (
 func newSwitchCommand() cmd.Command {
 	cmd := &switchCommand{
 		Store: jujuclient.NewFileClientStore(),
-		ReadCurrentController:  modelcmd.ReadCurrentController,
-		WriteCurrentController: modelcmd.WriteCurrentController,
 	}
 	cmd.RefreshModels = cmd.JujuCommandBase.RefreshModels
 	return modelcmd.WrapBase(cmd)
@@ -27,9 +25,7 @@ func newSwitchCommand() cmd.Command {
 
 type switchCommand struct {
 	modelcmd.JujuCommandBase
-	RefreshModels          func(jujuclient.ClientStore, string, string) error
-	ReadCurrentController  func() (string, error)
-	WriteCurrentController func(string) error
+	RefreshModels func(jujuclient.ClientStore, string, string) error
 
 	Store  jujuclient.ClientStore
 	Target string
@@ -45,7 +41,7 @@ When switching by controller name alone, the model
 you get is the active model for that controller. If you want a different
 model then you must switch using controller:model notation or switch to 
 the controller and then to the model. 
-The `[1:] + "`juju list-models`" + ` command can be used to determine the active model
+The `[1:] + "`juju models`" + ` command can be used to determine the active model
 (of any controller). An asterisk denotes it.
 
 Examples:
@@ -55,8 +51,8 @@ Examples:
     juju switch mycontroller:mymodel
 
 See also: 
-    list-controllers
-    list-models
+    controllers
+    models
     show-controller`
 
 func (c *switchCommand) Info() *cmd.Info {
@@ -78,8 +74,10 @@ func (c *switchCommand) Run(ctx *cmd.Context) (resultErr error) {
 
 	// Get the current name for logging the transition or printing
 	// the current controller/model.
-	currentControllerName, err := c.ReadCurrentController()
-	if err != nil {
+	currentControllerName, err := c.Store.CurrentController()
+	if errors.IsNotFound(err) {
+		currentControllerName = ""
+	} else if err != nil {
 		return errors.Trace(err)
 	}
 	if c.Target == "" {
@@ -115,8 +113,8 @@ func (c *switchCommand) Run(ctx *cmd.Context) (resultErr error) {
 	}
 
 	// If the target identifies a controller, then set that as the current controller.
-	var newControllerName string
-	if newControllerName, err = modelcmd.ResolveControllerName(c.Store, c.Target); err == nil {
+	var newControllerName = c.Target
+	if _, err = c.Store.ControllerByName(c.Target); err == nil {
 		if newControllerName == currentControllerName {
 			newName = currentName
 			return nil
@@ -125,7 +123,7 @@ func (c *switchCommand) Run(ctx *cmd.Context) (resultErr error) {
 			if err != nil {
 				return errors.Trace(err)
 			}
-			return errors.Trace(c.WriteCurrentController(newControllerName))
+			return errors.Trace(c.Store.SetCurrentController(newControllerName))
 		}
 	} else if !errors.IsNotFound(err) {
 		return errors.Trace(err)
@@ -137,9 +135,7 @@ func (c *switchCommand) Run(ctx *cmd.Context) (resultErr error) {
 	// case, the model must exist in the current controller.
 	newControllerName, modelName := modelcmd.SplitModelName(c.Target)
 	if newControllerName != "" {
-		// A controller was specified so see if we should use a local version.
-		newControllerName, err = modelcmd.ResolveControllerName(c.Store, newControllerName)
-		if err != nil {
+		if _, err = c.Store.ControllerByName(newControllerName); err != nil {
 			return errors.Trace(err)
 		}
 		newName = modelcmd.JoinModelName(newControllerName, modelName)
@@ -171,7 +167,7 @@ func (c *switchCommand) Run(ctx *cmd.Context) (resultErr error) {
 		return errors.Trace(err)
 	}
 	if currentControllerName != newControllerName {
-		if err := c.WriteCurrentController(newControllerName); err != nil {
+		if err := c.Store.SetCurrentController(newControllerName); err != nil {
 			return errors.Trace(err)
 		}
 	}

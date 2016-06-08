@@ -9,8 +9,8 @@ import (
 	"strconv"
 
 	"github.com/juju/errors"
-	"github.com/juju/names"
 	"github.com/juju/version"
+	"gopkg.in/juju/names.v2"
 	goyaml "gopkg.in/yaml.v2"
 
 	"github.com/juju/juju/apiserver/params"
@@ -46,8 +46,6 @@ type format_1_18Serialization struct {
 
 	OldPassword string
 	Values      map[string]string
-
-	PreferIPv6 bool `yaml:"prefer-ipv6,omitempty"`
 
 	// Only controller machines have these next items set.
 	ControllerCert string `yaml:",omitempty"`
@@ -105,7 +103,6 @@ func (formatter_1_18) unmarshal(data []byte) (*configInternal, error) {
 		caCert:            format.CACert,
 		oldPassword:       format.OldPassword,
 		values:            format.Values,
-		preferIPv6:        format.PreferIPv6,
 	}
 	if len(format.StateAddresses) > 0 {
 		config.stateDetails = &connectionDetails{
@@ -173,7 +170,6 @@ func (formatter_1_18) marshal(config *configInternal) ([]byte, error) {
 		CACert:            string(config.caCert),
 		OldPassword:       config.oldPassword,
 		Values:            config.values,
-		PreferIPv6:        config.preferIPv6,
 	}
 	if config.servingInfo != nil {
 		format.ControllerCert = config.servingInfo.Cert

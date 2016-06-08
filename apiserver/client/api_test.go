@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/juju/errors"
-	"github.com/juju/names"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/api"
 	commontesting "github.com/juju/juju/apiserver/common/testing"
@@ -73,8 +73,8 @@ func chanReadConfig(c *gc.C, ch <-chan *config.Config, what string) (*config.Con
 	panic("unreachable")
 }
 
-func removeServiceAndUnits(c *gc.C, service *state.Service) {
-	// Destroy all units for the service.
+func removeServiceAndUnits(c *gc.C, service *state.Application) {
+	// Destroy all units for the application.
 	units, err := service.AllUnits()
 	c.Assert(err, jc.ErrorIsNil)
 	for _, unit := range units {
@@ -108,11 +108,17 @@ func defaultPassword(e apiAuthenticator) string {
 }
 
 type setStatuser interface {
-	SetStatus(statuSettable status.Status, info string, data map[string]interface{}) error
+	SetStatus(status.StatusInfo) error
 }
 
 func setDefaultStatus(c *gc.C, entity setStatuser) {
-	err := entity.SetStatus(status.StatusStarted, "", nil)
+	now := time.Now()
+	s := status.StatusInfo{
+		Status:  status.StatusStarted,
+		Message: "",
+		Since:   &now,
+	}
+	err := entity.SetStatus(s)
 	c.Assert(err, jc.ErrorIsNil)
 }
 
@@ -164,7 +170,7 @@ var scenarioStatus = &params.FullStatus{
 				Data:   make(map[string]interface{}),
 			},
 			InstanceStatus: params.DetailedStatus{
-				Status: status.StatusPending,
+				Status: status.StatusPending.String(),
 				Data:   make(map[string]interface{}),
 			},
 			Series:     "quantal",
@@ -181,7 +187,7 @@ var scenarioStatus = &params.FullStatus{
 				Data:   make(map[string]interface{}),
 			},
 			InstanceStatus: params.DetailedStatus{
-				Status: status.StatusPending,
+				Status: status.StatusPending.String(),
 				Data:   make(map[string]interface{}),
 			},
 			Series:     "quantal",
@@ -198,7 +204,7 @@ var scenarioStatus = &params.FullStatus{
 				Data:   make(map[string]interface{}),
 			},
 			InstanceStatus: params.DetailedStatus{
-				Status: status.StatusPending,
+				Status: status.StatusPending.String(),
 				Data:   make(map[string]interface{}),
 			},
 			Series:     "quantal",
@@ -208,7 +214,7 @@ var scenarioStatus = &params.FullStatus{
 			WantsVote:  false,
 		},
 	},
-	Services: map[string]params.ServiceStatus{
+	Applications: map[string]params.ApplicationStatus{
 		"logging": {
 			Charm: "local:quantal/logging-1",
 			Relations: map[string][]string{
@@ -302,16 +308,16 @@ var scenarioStatus = &params.FullStatus{
 			Key: "logging:logging-directory wordpress:logging-dir",
 			Endpoints: []params.EndpointStatus{
 				{
-					ServiceName: "logging",
-					Name:        "logging-directory",
-					Role:        "requirer",
-					Subordinate: true,
+					ApplicationName: "logging",
+					Name:            "logging-directory",
+					Role:            "requirer",
+					Subordinate:     true,
 				},
 				{
-					ServiceName: "wordpress",
-					Name:        "logging-dir",
-					Role:        "provider",
-					Subordinate: false,
+					ApplicationName: "wordpress",
+					Name:            "logging-dir",
+					Role:            "provider",
+					Subordinate:     false,
 				},
 			},
 			Interface: "logging",
@@ -343,8 +349,8 @@ var scenarioStatus = &params.FullStatus{
 //  nonce="fake_nonce"
 //  jobs=host-units
 //  status=started, info=""
-// service-wordpress
-// service-logging
+// application-wordpress
+// application-logging
 // unit-wordpress-0
 //  deployer-name=machine-1
 //  status=down with error and status data attached
@@ -431,7 +437,14 @@ func (s *baseSuite) setUpScenario(c *gc.C) (entities []names.Tag) {
 				"remote-unit": "logging/0",
 				"foo":         "bar",
 			}
-			err := wu.SetAgentStatus(status.StatusError, "blam", sd)
+			now := time.Now()
+			sInfo := status.StatusInfo{
+				Status:  status.StatusError,
+				Message: "blam",
+				Data:    sd,
+				Since:   &now,
+			}
+			err := wu.SetAgentStatus(sInfo)
 			c.Assert(err, jc.ErrorIsNil)
 		}
 

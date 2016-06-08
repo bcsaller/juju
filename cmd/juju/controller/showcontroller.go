@@ -27,7 +27,7 @@ Examples:
     juju show-controller aws google
     
 See also: 
-    list-controllers`[1:]
+    controllers`[1:]
 
 // NewShowControllerCommand returns a command to show details of the desired controllers.
 func NewShowControllerCommand() cmd.Command {
@@ -68,26 +68,21 @@ func (c *showControllerCommand) SetFlags(f *gnuflag.FlagSet) {
 func (c *showControllerCommand) Run(ctx *cmd.Context) error {
 	controllerNames := c.controllerNames
 	if len(controllerNames) == 0 {
-		currentController, err := modelcmd.ReadCurrentController()
-		if err != nil {
-			return errors.Trace(err)
-		}
-		if currentController == "" {
+		currentController, err := c.store.CurrentController()
+		if errors.IsNotFound(err) {
 			return errors.New("there is no active controller")
+		} else if err != nil {
+			return errors.Trace(err)
 		}
 		controllerNames = []string{currentController}
 	}
 	controllers := make(map[string]ShowControllerDetails)
 	for _, name := range controllerNames {
-		actualName, err := modelcmd.ResolveControllerName(c.store, name)
+		one, err := c.store.ControllerByName(name)
 		if err != nil {
 			return err
 		}
-		one, err := c.store.ControllerByName(actualName)
-		if err != nil {
-			return err
-		}
-		controllers[name] = c.convertControllerForShow(actualName, one)
+		controllers[name] = c.convertControllerForShow(name, one)
 	}
 	return c.out.Write(ctx, controllers)
 }
@@ -120,6 +115,12 @@ type ControllerDetails struct {
 
 	// CACert is a security certificate for this controller.
 	CACert string `yaml:"ca-cert" json:"ca-cert"`
+
+	// Cloud is the name of the cloud that this controller runs in.
+	Cloud string `yaml:"cloud" json:"cloud"`
+
+	// CloudRegion is the name of the cloud region that this controller runs in.
+	CloudRegion string `yaml:"region,omitempty" json:"region,omitempty"`
 }
 
 // ModelDetails holds details of a model to show.
@@ -160,6 +161,8 @@ func (c *showControllerCommand) convertControllerForShow(controllerName string, 
 			ControllerUUID: details.ControllerUUID,
 			APIEndpoints:   details.APIEndpoints,
 			CACert:         details.CACert,
+			Cloud:          details.Cloud,
+			CloudRegion:    details.CloudRegion,
 		},
 	}
 	c.convertAccountsForShow(controllerName, &controller)

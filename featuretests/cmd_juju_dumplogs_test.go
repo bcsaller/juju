@@ -10,12 +10,12 @@ import (
 	"time"
 
 	"github.com/juju/loggo"
-	"github.com/juju/names"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/agent"
-	agenttesting "github.com/juju/juju/cmd/jujud/agent/testing"
+	"github.com/juju/juju/cmd/jujud/agent/agenttest"
 	"github.com/juju/juju/cmd/jujud/dumplogs"
 	"github.com/juju/juju/state"
 	"github.com/juju/juju/testing"
@@ -23,7 +23,7 @@ import (
 )
 
 type dumpLogsCommandSuite struct {
-	agenttesting.AgentSuite
+	agenttest.AgentSuite
 }
 
 func (s *dumpLogsCommandSuite) SetUpTest(c *gc.C) {

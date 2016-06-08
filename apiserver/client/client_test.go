@@ -11,12 +11,12 @@ import (
 	"time"
 
 	"github.com/juju/errors"
-	"github.com/juju/names"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/series"
 	"github.com/juju/version"
 	gc "gopkg.in/check.v1"
 	"gopkg.in/juju/charm.v6-unstable"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/api"
@@ -339,7 +339,7 @@ var _ = gc.Suite(&clientSuite{})
 // clearSinceTimes zeros out the updated timestamps inside status
 // so we can easily check the results.
 func clearSinceTimes(status *params.FullStatus) {
-	for serviceId, service := range status.Services {
+	for applicationId, service := range status.Applications {
 		for unitId, unit := range service.Units {
 			unit.WorkloadStatus.Since = nil
 			unit.AgentStatus.Since = nil
@@ -351,7 +351,7 @@ func clearSinceTimes(status *params.FullStatus) {
 			service.Units[unitId] = unit
 		}
 		service.Status.Since = nil
-		status.Services[serviceId] = service
+		status.Applications[applicationId] = service
 	}
 	for id, machine := range status.Machines {
 		machine.AgentStatus.Since = nil
@@ -459,12 +459,15 @@ func (s *clientSuite) TestClientCharmInfo(c *gc.C) {
 }
 
 func (s *clientSuite) TestClientModelInfo(c *gc.C) {
+	model, err := s.State.Model()
+	c.Assert(err, jc.ErrorIsNil)
 	conf, _ := s.State.ModelConfig()
 	info, err := s.APIState.Client().ModelInfo()
 	c.Assert(err, jc.ErrorIsNil)
 	env, err := s.State.Model()
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(info.DefaultSeries, gc.Equals, config.PreferredSeries(conf))
+	c.Assert(info.Cloud, gc.Equals, model.Cloud())
 	c.Assert(info.ProviderType, gc.Equals, conf.Type())
 	c.Assert(info.Name, gc.Equals, conf.Name())
 	c.Assert(info.UUID, gc.Equals, env.UUID())
@@ -518,7 +521,13 @@ func (s *clientSuite) testClientUnitResolved(c *gc.C, retry bool, expectedResolv
 	s.setUpScenario(c)
 	u, err := s.State.Unit("wordpress/0")
 	c.Assert(err, jc.ErrorIsNil)
-	err = u.SetAgentStatus(status.StatusError, "gaaah", nil)
+	now := time.Now()
+	sInfo := status.StatusInfo{
+		Status:  status.StatusError,
+		Message: "gaaah",
+		Since:   &now,
+	}
+	err = u.SetAgentStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
 	// Code under test:
 	err = s.APIState.Client().Resolved("wordpress/0", retry)
@@ -544,7 +553,13 @@ func (s *clientSuite) setupResolved(c *gc.C) *state.Unit {
 	s.setUpScenario(c)
 	u, err := s.State.Unit("wordpress/0")
 	c.Assert(err, jc.ErrorIsNil)
-	err = u.SetAgentStatus(status.StatusError, "gaaah", nil)
+	now := time.Now()
+	sInfo := status.StatusInfo{
+		Status:  status.StatusError,
+		Message: "gaaah",
+		Since:   &now,
+	}
+	err = u.SetAgentStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
 	return u
 }
@@ -730,14 +745,13 @@ func (s *clientSuite) TestClientPublicAddressErrors(c *gc.C) {
 	_, err := s.APIState.Client().PublicAddress("wordpress")
 	c.Assert(err, gc.ErrorMatches, `unknown unit or machine "wordpress"`)
 	_, err = s.APIState.Client().PublicAddress("0")
-	c.Assert(err, gc.ErrorMatches, `error fetching address for machine "0": public no address`)
+	c.Assert(err, gc.ErrorMatches, `error fetching address for machine "0": no public address`)
 	_, err = s.APIState.Client().PublicAddress("wordpress/0")
-	c.Assert(err, gc.ErrorMatches, `error fetching address for unit "wordpress/0": public no address`)
+	c.Assert(err, gc.ErrorMatches, `error fetching address for unit "wordpress/0": no public address`)
 }
 
 func (s *clientSuite) TestClientPublicAddressMachine(c *gc.C) {
 	s.setUpScenario(c)
-	network.SetPreferIPv6(false)
 
 	// Internally, network.SelectPublicAddress is used; the "most public"
 	// address is returned.
@@ -773,14 +787,13 @@ func (s *clientSuite) TestClientPrivateAddressErrors(c *gc.C) {
 	_, err := s.APIState.Client().PrivateAddress("wordpress")
 	c.Assert(err, gc.ErrorMatches, `unknown unit or machine "wordpress"`)
 	_, err = s.APIState.Client().PrivateAddress("0")
-	c.Assert(err, gc.ErrorMatches, `error fetching address for machine "0": private no address`)
+	c.Assert(err, gc.ErrorMatches, `error fetching address for machine "0": no private address`)
 	_, err = s.APIState.Client().PrivateAddress("wordpress/0")
-	c.Assert(err, gc.ErrorMatches, `error fetching address for unit "wordpress/0": private no address`)
+	c.Assert(err, gc.ErrorMatches, `error fetching address for unit "wordpress/0": no private address`)
 }
 
 func (s *clientSuite) TestClientPrivateAddress(c *gc.C) {
 	s.setUpScenario(c)
-	network.SetPreferIPv6(false)
 
 	// Internally, network.SelectInternalAddress is used; the public
 	// address if no cloud-local one is available.
@@ -855,10 +868,10 @@ func (s *serverSuite) TestClientModelSetImmutable(c *gc.C) {
 	// The various immutable config values are tested in
 	// environs/config/config_test.go, so just choosing one here.
 	params := params.ModelSet{
-		Config: map[string]interface{}{"state-port": "1"},
+		Config: map[string]interface{}{"firewall-mode": "global"},
 	}
 	err := s.client.ModelSet(params)
-	c.Check(err, gc.ErrorMatches, `cannot change state-port from .* to 1`)
+	c.Check(err, gc.ErrorMatches, `cannot change firewall-mode from .* to "global"`)
 }
 
 func (s *serverSuite) assertModelSetBlocked(c *gc.C, args map[string]interface{}, msg string) {
@@ -1156,7 +1169,7 @@ func (s *clientSuite) TestClientAddMachinesWithInstanceIdSomeErrors(c *gc.C) {
 			InstanceId: instance.Id(fmt.Sprintf("1234-%d", i)),
 			Nonce:      "foo",
 			HardwareCharacteristics: hc,
-			Addrs: params.FromNetworkAddresses(addrs),
+			Addrs: params.FromNetworkAddresses(addrs...),
 		}
 	}
 	// This will cause the last add-machine to fail.
@@ -1400,7 +1413,13 @@ func (s *clientRepoSuite) TestResolveCharm(c *gc.C) {
 func (s *clientSuite) TestRetryProvisioning(c *gc.C) {
 	machine, err := s.State.AddMachine("quantal", state.JobHostUnits)
 	c.Assert(err, jc.ErrorIsNil)
-	err = machine.SetStatus(status.StatusError, "error", nil)
+	now := time.Now()
+	sInfo := status.StatusInfo{
+		Status:  status.StatusError,
+		Message: "error",
+		Since:   &now,
+	}
+	err = machine.SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
 	_, err = s.APIState.Client().RetryProvisioning(machine.Tag().(names.MachineTag))
 	c.Assert(err, jc.ErrorIsNil)
@@ -1415,7 +1434,13 @@ func (s *clientSuite) TestRetryProvisioning(c *gc.C) {
 func (s *clientSuite) setupRetryProvisioning(c *gc.C) *state.Machine {
 	machine, err := s.State.AddMachine("quantal", state.JobHostUnits)
 	c.Assert(err, jc.ErrorIsNil)
-	err = machine.SetStatus(status.StatusError, "error", nil)
+	now := time.Now()
+	sInfo := status.StatusInfo{
+		Status:  status.StatusError,
+		Message: "error",
+		Since:   &now,
+	}
+	err = machine.SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
 	return machine
 }

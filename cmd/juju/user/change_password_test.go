@@ -8,10 +8,10 @@ import (
 
 	"github.com/juju/cmd"
 	"github.com/juju/errors"
-	"github.com/juju/names"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/juju/names.v2"
 	"gopkg.in/macaroon.v1"
 
 	"github.com/juju/juju/cmd/juju/user"
@@ -117,7 +117,7 @@ func (s *ChangePasswordCommandSuite) TestNoSetPasswordAfterFailedWrite(c *gc.C) 
 		return &jujuclient.ControllerDetails{}, nil
 	}
 	s.store = store
-	store.SetErrors(errors.New("failed to write"))
+	store.SetErrors(nil, errors.New("failed to write"))
 
 	_, err := s.run(c)
 	c.Assert(err, gc.ErrorMatches, "failed to update client credentials: failed to write")

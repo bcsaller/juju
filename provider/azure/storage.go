@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/Godeps/_workspace/src/github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/azure-sdk-for-go/Godeps/_workspace/src/github.com/Azure/go-autorest/autorest/to"
 	"github.com/Azure/azure-sdk-for-go/arm/compute"
 	azurestorage "github.com/Azure/azure-sdk-for-go/storage"
 	"github.com/juju/errors"
-	"github.com/juju/names"
 	"github.com/juju/schema"
 	"github.com/juju/utils"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/config"
@@ -591,7 +592,12 @@ func (v *azureVolumeSource) updateVirtualMachines(
 			results[i] = vm.err
 			continue
 		}
-		if _, err := vmsClient.CreateOrUpdate(v.env.resourceGroup, to.String(vm.vm.Name), *vm.vm); err != nil {
+		if err := v.env.callAPI(func() (autorest.Response, error) {
+			result, err := vmsClient.CreateOrUpdate(
+				v.env.resourceGroup, to.String(vm.vm.Name), *vm.vm,
+			)
+			return result.Response, err
+		}); err != nil {
 			results[i] = err
 			vm.err = err
 			continue
@@ -610,7 +616,7 @@ func nextAvailableLUN(vm *compute.VirtualMachine) (int, error) {
 		for _, disk := range *vm.Properties.StorageProfile.DataDisks {
 			lun := to.Int(disk.Lun)
 			if lun < 0 || lun > 31 {
-				logger.Warningf("ignore disk with invalid LUN: %+v", disk)
+				logger.Debugf("ignore disk with invalid LUN: %+v", disk)
 				continue
 			}
 			inUse[lun] = true

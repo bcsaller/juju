@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/juju/errors"
-	"github.com/juju/names"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils"
 	gc "gopkg.in/check.v1"
 	"gopkg.in/juju/charm.v6-unstable"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/api"
 	"github.com/juju/juju/api/base"
@@ -123,7 +123,13 @@ func (s *unitSuite) TestSetUnitStatus(c *gc.C) {
 }
 
 func (s *unitSuite) TestUnitStatus(c *gc.C) {
-	err := s.wordpressUnit.SetStatus(status.StatusMaintenance, "blah", nil)
+	now := time.Now()
+	sInfo := status.StatusInfo{
+		Status:  status.StatusMaintenance,
+		Message: "blah",
+		Since:   &now,
+	}
+	err := s.wordpressUnit.SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
 
 	result, err := s.apiUnit.UnitStatus()
@@ -131,7 +137,7 @@ func (s *unitSuite) TestUnitStatus(c *gc.C) {
 	c.Assert(result.Since, gc.NotNil)
 	result.Since = nil
 	c.Assert(result, gc.DeepEquals, params.StatusResult{
-		Status: status.StatusMaintenance,
+		Status: status.StatusMaintenance.String(),
 		Info:   "blah",
 		Data:   map[string]interface{}{},
 	})
@@ -563,8 +569,8 @@ func (s *unitSuite) TestWatchActionNotificationsMoreResults(c *gc.C) {
 }
 
 func (s *unitSuite) TestServiceNameAndTag(c *gc.C) {
-	c.Assert(s.apiUnit.ServiceName(), gc.Equals, s.wordpressService.Name())
-	c.Assert(s.apiUnit.ServiceTag(), gc.Equals, s.wordpressService.Tag())
+	c.Assert(s.apiUnit.ApplicationName(), gc.Equals, s.wordpressService.Name())
+	c.Assert(s.apiUnit.ApplicationTag(), gc.Equals, s.wordpressService.Tag())
 }
 
 func (s *unitSuite) TestJoinedRelations(c *gc.C) {
@@ -778,11 +784,11 @@ func (s *unitMetricBatchesSuite) SetUpTest(c *gc.C) {
 		Name: "metered",
 		URL:  "cs:quantal/metered",
 	})
-	service := s.Factory.MakeService(c, &jujufactory.ServiceParams{
+	service := s.Factory.MakeApplication(c, &jujufactory.ApplicationParams{
 		Charm: s.charm,
 	})
 	unit := s.Factory.MakeUnit(c, &jujufactory.UnitParams{
-		Service:     service,
+		Application: service,
 		SetCharmURL: true,
 	})
 

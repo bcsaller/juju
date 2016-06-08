@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/juju/errors"
-	"github.com/juju/names"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/storage"
@@ -229,7 +229,7 @@ func (lvs *loopVolumeSource) detachVolume(tag names.VolumeTag) error {
 		return errors.Annotate(err, "locating loop device")
 	}
 	if len(deviceNames) > 1 {
-		logger.Warningf("expected 1 loop device, got %d", len(deviceNames))
+		logger.Errorf("expected 1 loop device, got %d", len(deviceNames))
 	}
 	for _, deviceName := range deviceNames {
 		if err := detachLoopDevice(lvs.run, deviceName); err != nil {

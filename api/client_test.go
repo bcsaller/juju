@@ -18,12 +18,12 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/httprequest"
 	"github.com/juju/loggo"
-	"github.com/juju/names"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/version"
 	"golang.org/x/net/websocket"
 	gc "gopkg.in/check.v1"
 	"gopkg.in/juju/charm.v6-unstable"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/api"
 	"github.com/juju/juju/api/base"
@@ -295,7 +295,9 @@ func (s *clientSuite) TestClientEnvironmentUUID(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 
 	client := s.APIState.Client()
-	c.Assert(client.ModelUUID(), gc.Equals, environ.Tag().Id())
+	uuid, err := client.ModelUUID()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(uuid, gc.Equals, environ.Tag().Id())
 }
 
 func (s *clientSuite) TestClientEnvironmentUsers(c *gc.C) {

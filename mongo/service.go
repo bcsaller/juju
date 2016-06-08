@@ -142,7 +142,9 @@ func newConf(dataDir, dbDir, mongoPath string, port, oplogSizeMB int, wantNumaCt
 		" --dbpath " + utils.ShQuote(dbDir) +
 		" --sslOnNormalPorts" +
 		" --sslPEMKeyFile " + utils.ShQuote(sslKeyPath(dataDir)) +
-		" --sslPEMKeyPassword ignored" +
+		// --sslPEMKeyPassword has to have its argument passed with = thanks to
+		// https://bugs.launchpad.net/juju-core/+bug/1581284.
+		" --sslPEMKeyPassword=ignored" +
 		" --port " + fmt.Sprint(port) +
 		" --syslog" +
 		" --journal" +
@@ -208,10 +210,8 @@ func EnsureServiceInstalled(dataDir string, statePort, oplogSizeMB int, setNumaC
 	if err != nil {
 		return errors.Trace(err)
 	}
-	if err := svc.Remove(); err != nil {
-		return errors.Trace(err)
-	}
 
+	logger.Debugf("installing mongo service")
 	if err := svc.Install(); err != nil {
 		return errors.Trace(err)
 	}

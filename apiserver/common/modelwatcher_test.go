@@ -6,9 +6,9 @@ package common_test
 import (
 	"fmt"
 
-	"github.com/juju/names"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/apiserver/common"
 	"github.com/juju/juju/apiserver/params"
@@ -36,10 +36,7 @@ type fakeModelAccessor struct {
 }
 
 func (*fakeModelAccessor) WatchForModelConfigChanges() state.NotifyWatcher {
-	w := apiservertesting.NewFakeNotifyWatcher()
-	// Simulate initial event.
-	w.C <- struct{}{}
-	return w
+	return apiservertesting.NewFakeNotifyWatcher()
 }
 
 func (f *fakeModelAccessor) ModelConfig() (*config.Config, error) {

@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"sync/atomic"
 
-	"github.com/juju/names"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/arch"
@@ -23,6 +22,7 @@ import (
 	"github.com/juju/utils/series"
 	"github.com/juju/version"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/agent"
 	apiprovisioner "github.com/juju/juju/api/provisioner"
@@ -297,14 +297,9 @@ func (s *ContainerSetupSuite) TestLxcContainerUsesImageURL(c *gc.C) {
 
 func (s *ContainerSetupSuite) TestContainerManagerConfigName(c *gc.C) {
 	pr := s.st.Provisioner()
-	expect := func(expect string) {
-		cfg, err := provisioner.ContainerManagerConfig(instance.KVM, pr, s.agentConfig)
-		c.Assert(err, jc.ErrorIsNil)
-		c.Assert(cfg[container.ConfigName], gc.Equals, expect)
-	}
-	expect("juju")
-	s.agentConfig.SetValue(agent.Namespace, "any-old-thing")
-	expect("any-old-thing")
+	cfg, err := provisioner.ContainerManagerConfig(instance.KVM, pr, s.agentConfig)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(cfg[container.ConfigModelUUID], gc.Equals, coretesting.ModelTag.Id())
 }
 
 type ContainerInstance struct {

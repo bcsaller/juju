@@ -4,16 +4,18 @@
 package state_test
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/juju/errors"
-	"github.com/juju/names"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
 	"gopkg.in/juju/charm.v6-unstable"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/instance"
 	"github.com/juju/juju/state"
+	"github.com/juju/juju/state/storage"
 	"github.com/juju/juju/storage/provider"
 	"github.com/juju/juju/storage/provider/registry"
 	"github.com/juju/juju/testing/factory"
@@ -72,13 +74,37 @@ func (s *CleanupSuite) TestCleanupDyingServiceUnits(c *gc.C) {
 	s.assertCleanupCount(c, 1)
 }
 
+func (s *CleanupSuite) TestCleanupDyingServiceCharm(c *gc.C) {
+	// Create a service and  a charm.
+	ch := s.AddTestingCharm(c, "mysql")
+	mysql := s.AddTestingService(c, "mysql", ch)
+
+	// Create a dummy archive blob.
+	stor := storage.NewStorage(s.State.ModelUUID(), s.State.MongoSession())
+	storagePath := "dummy-path"
+	err := stor.Put(storagePath, bytes.NewReader([]byte("data")), 4)
+	c.Assert(err, jc.ErrorIsNil)
+
+	// Destroy the service and check that a cleanup has been scheduled.
+	err = mysql.Destroy()
+	c.Assert(err, jc.ErrorIsNil)
+	s.assertNeedsCleanup(c)
+
+	// Run the cleanup, and check that the charm is removed.
+	s.assertCleanupRuns(c)
+	_, _, err = stor.Get(storagePath)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
+	_, err = s.State.Charm(ch.URL())
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
+}
+
 func (s *CleanupSuite) TestCleanupControllerModels(c *gc.C) {
 	s.assertDoesNotNeedCleanup(c)
 
 	// Create a non-empty hosted model.
 	otherSt := s.Factory.MakeModel(c, nil)
 	defer otherSt.Close()
-	factory.NewFactory(otherSt).MakeService(c, nil)
+	factory.NewFactory(otherSt).MakeApplication(c, nil)
 	otherEnv, err := otherSt.Model()
 	c.Assert(err, jc.ErrorIsNil)
 
@@ -151,7 +177,7 @@ func (s *CleanupSuite) TestCleanupModelServices(c *gc.C) {
 	s.assertDoesNotNeedCleanup(c)
 
 	// Destroy the model and check the service and units are
-	// unaffected, but a cleanup for the service has been scheduled.
+	// unaffected, but a cleanup for the application has been scheduled.
 	env, err := s.State.Model()
 	c.Assert(err, jc.ErrorIsNil)
 	err = env.Destroy()

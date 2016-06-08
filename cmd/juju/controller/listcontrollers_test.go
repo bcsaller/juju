@@ -25,7 +25,7 @@ var _ = gc.Suite(&ListControllersSuite{})
 
 func (s *ListControllersSuite) TestListControllersEmptyStore(c *gc.C) {
 	s.expectedOutput = `
-CONTROLLER  MODEL  USER  SERVER
+CONTROLLER  MODEL  USER  CLOUD/REGION
 
 `[1:]
 
@@ -35,10 +35,10 @@ CONTROLLER  MODEL  USER  SERVER
 
 func (s *ListControllersSuite) TestListControllers(c *gc.C) {
 	s.expectedOutput = `
-CONTROLLER                 MODEL     USER         SERVER
-local.aws-test             -         -            this-is-aws-test-of-many-api-endpoints
-local.mallards*            my-model  admin@local  this-is-another-of-many-api-endpoints
-local.mark-test-prodstack  -         -            this-is-one-of-many-api-endpoints
+CONTROLLER           MODEL     USER         CLOUD/REGION
+aws-test             -         -            aws/us-east-1
+mallards*            my-model  admin@local  mallards/mallards1
+mark-test-prodstack  -         -            prodstack
 
 `[1:]
 
@@ -49,24 +49,29 @@ local.mark-test-prodstack  -         -            this-is-one-of-many-api-endpoi
 func (s *ListControllersSuite) TestListControllersYaml(c *gc.C) {
 	s.expectedOutput = `
 controllers:
-  local.aws-test:
+  aws-test:
     recent-server: this-is-aws-test-of-many-api-endpoints
     uuid: this-is-the-aws-test-uuid
     api-endpoints: [this-is-aws-test-of-many-api-endpoints]
     ca-cert: this-is-aws-test-ca-cert
-  local.mallards:
+    cloud: aws
+    region: us-east-1
+  mallards:
     current-model: my-model
     user: admin@local
     recent-server: this-is-another-of-many-api-endpoints
     uuid: this-is-another-uuid
     api-endpoints: [this-is-another-of-many-api-endpoints, this-is-one-more-of-many-api-endpoints]
     ca-cert: this-is-another-ca-cert
-  local.mark-test-prodstack:
+    cloud: mallards
+    region: mallards1
+  mark-test-prodstack:
     recent-server: this-is-one-of-many-api-endpoints
     uuid: this-is-a-uuid
     api-endpoints: [this-is-one-of-many-api-endpoints]
     ca-cert: this-is-a-ca-cert
-current-controller: local.mallards
+    cloud: prodstack
+current-controller: mallards
 `[1:]
 
 	s.createTestClientStore(c)
@@ -82,28 +87,33 @@ func (s *ListControllersSuite) TestListControllersJson(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(result, jc.DeepEquals, controller.ControllerSet{
 		Controllers: map[string]controller.ControllerItem{
-			"local.aws-test": {
+			"aws-test": {
 				ControllerUUID: "this-is-the-aws-test-uuid",
 				Server:         "this-is-aws-test-of-many-api-endpoints",
 				APIEndpoints:   []string{"this-is-aws-test-of-many-api-endpoints"},
 				CACert:         "this-is-aws-test-ca-cert",
+				Cloud:          "aws",
+				CloudRegion:    "us-east-1",
 			},
-			"local.mallards": {
+			"mallards": {
 				ControllerUUID: "this-is-another-uuid",
 				ModelName:      "my-model",
 				User:           "admin@local",
 				Server:         "this-is-another-of-many-api-endpoints",
 				APIEndpoints:   []string{"this-is-another-of-many-api-endpoints", "this-is-one-more-of-many-api-endpoints"},
 				CACert:         "this-is-another-ca-cert",
+				Cloud:          "mallards",
+				CloudRegion:    "mallards1",
 			},
-			"local.mark-test-prodstack": {
+			"mark-test-prodstack": {
 				ControllerUUID: "this-is-a-uuid",
 				Server:         "this-is-one-of-many-api-endpoints",
 				APIEndpoints:   []string{"this-is-one-of-many-api-endpoints"},
 				CACert:         "this-is-a-ca-cert",
+				Cloud:          "prodstack",
 			},
 		},
-		CurrentController: "local.mallards",
+		CurrentController: "mallards",
 	})
 }
 

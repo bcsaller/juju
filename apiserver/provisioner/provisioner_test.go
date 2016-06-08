@@ -6,13 +6,13 @@ package provisioner_test
 import (
 	"fmt"
 	stdtesting "testing"
+	"time"
 
 	"github.com/juju/errors"
-	"github.com/juju/names"
-	jujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/proxy"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/apiserver/common"
 	commontesting "github.com/juju/juju/apiserver/common/testing"
@@ -34,9 +34,6 @@ import (
 )
 
 func TestPackage(t *stdtesting.T) {
-	if jujutesting.RaceEnabled {
-		t.Skip("skipping package under -race, see LP 1517632")
-	}
 	coretesting.MgoTestPackage(t)
 }
 
@@ -138,7 +135,7 @@ func (s *withoutControllerSuite) TestSetPasswords(c *gc.C) {
 			{Tag: s.machines[4].Tag().String(), Password: "xxx4-1234567890123457890"},
 			{Tag: "machine-42", Password: "foo"},
 			{Tag: "unit-foo-0", Password: "zzz"},
-			{Tag: "service-bar", Password: "abc"},
+			{Tag: "application-bar", Password: "abc"},
 		},
 	}
 	results, err := s.provisioner.SetPasswords(args)
@@ -224,7 +221,7 @@ func (s *withoutControllerSuite) TestLifeAsMachineAgent(c *gc.C) {
 		{Tag: containers[2].Tag().String()},
 		{Tag: "machine-42"},
 		{Tag: "unit-foo-0"},
-		{Tag: "service-bar"},
+		{Tag: "application-bar"},
 	}}
 	result, err := aProvisioner.Life(args)
 	c.Assert(err, jc.ErrorIsNil)
@@ -257,7 +254,7 @@ func (s *withoutControllerSuite) TestLifeAsEnvironManager(c *gc.C) {
 		{Tag: s.machines[2].Tag().String()},
 		{Tag: "machine-42"},
 		{Tag: "unit-foo-0"},
-		{Tag: "service-bar"},
+		{Tag: "application-bar"},
 	}}
 	result, err := s.provisioner.Life(args)
 	c.Assert(err, jc.ErrorIsNil)
@@ -304,7 +301,7 @@ func (s *withoutControllerSuite) TestRemove(c *gc.C) {
 		{Tag: s.machines[2].Tag().String()},
 		{Tag: "machine-42"},
 		{Tag: "unit-foo-0"},
-		{Tag: "service-bar"},
+		{Tag: "application-bar"},
 	}}
 	result, err := s.provisioner.Remove(args)
 	c.Assert(err, jc.ErrorIsNil)
@@ -327,22 +324,38 @@ func (s *withoutControllerSuite) TestRemove(c *gc.C) {
 }
 
 func (s *withoutControllerSuite) TestSetStatus(c *gc.C) {
-	err := s.machines[0].SetStatus(status.StatusStarted, "blah", nil)
+	now := time.Now()
+	sInfo := status.StatusInfo{
+		Status:  status.StatusStarted,
+		Message: "blah",
+		Since:   &now,
+	}
+	err := s.machines[0].SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
-	err = s.machines[1].SetStatus(status.StatusStopped, "foo", nil)
+	sInfo = status.StatusInfo{
+		Status:  status.StatusStopped,
+		Message: "foo",
+		Since:   &now,
+	}
+	err = s.machines[1].SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
-	err = s.machines[2].SetStatus(status.StatusError, "not really", nil)
+	sInfo = status.StatusInfo{
+		Status:  status.StatusError,
+		Message: "not really",
+		Since:   &now,
+	}
+	err = s.machines[2].SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
 
 	args := params.SetStatus{
 		Entities: []params.EntityStatusArgs{
-			{Tag: s.machines[0].Tag().String(), Status: status.StatusError, Info: "not really",
+			{Tag: s.machines[0].Tag().String(), Status: status.StatusError.String(), Info: "not really",
 				Data: map[string]interface{}{"foo": "bar"}},
-			{Tag: s.machines[1].Tag().String(), Status: status.StatusStopped, Info: "foobar"},
-			{Tag: s.machines[2].Tag().String(), Status: status.StatusStarted, Info: "again"},
-			{Tag: "machine-42", Status: status.StatusStarted, Info: "blah"},
-			{Tag: "unit-foo-0", Status: status.StatusStopped, Info: "foobar"},
-			{Tag: "service-bar", Status: status.StatusStopped, Info: "foobar"},
+			{Tag: s.machines[1].Tag().String(), Status: status.StatusStopped.String(), Info: "foobar"},
+			{Tag: s.machines[2].Tag().String(), Status: status.StatusStarted.String(), Info: "again"},
+			{Tag: "machine-42", Status: status.StatusStarted.String(), Info: "blah"},
+			{Tag: "unit-foo-0", Status: status.StatusStopped.String(), Info: "foobar"},
+			{Tag: "application-bar", Status: status.StatusStopped.String(), Info: "foobar"},
 		}}
 	result, err := s.provisioner.SetStatus(args)
 	c.Assert(err, jc.ErrorIsNil)
@@ -364,18 +377,45 @@ func (s *withoutControllerSuite) TestSetStatus(c *gc.C) {
 }
 
 func (s *withoutControllerSuite) TestMachinesWithTransientErrors(c *gc.C) {
-	err := s.machines[0].SetStatus(status.StatusStarted, "blah", nil)
+	now := time.Now()
+	sInfo := status.StatusInfo{
+		Status:  status.StatusStarted,
+		Message: "blah",
+		Since:   &now,
+	}
+	err := s.machines[0].SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
-	err = s.machines[1].SetStatus(status.StatusError, "transient error",
-		map[string]interface{}{"transient": true, "foo": "bar"})
+	sInfo = status.StatusInfo{
+		Status:  status.StatusError,
+		Message: "transient error",
+		Data:    map[string]interface{}{"transient": true, "foo": "bar"},
+		Since:   &now,
+	}
+	err = s.machines[1].SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
-	err = s.machines[2].SetStatus(status.StatusError, "error", map[string]interface{}{"transient": false})
+	sInfo = status.StatusInfo{
+		Status:  status.StatusError,
+		Message: "error",
+		Data:    map[string]interface{}{"transient": false},
+		Since:   &now,
+	}
+	err = s.machines[2].SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
-	err = s.machines[3].SetStatus(status.StatusError, "error", nil)
+	sInfo = status.StatusInfo{
+		Status:  status.StatusError,
+		Message: "error",
+		Since:   &now,
+	}
+	err = s.machines[3].SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
 	// Machine 4 is provisioned but error not reset yet.
-	err = s.machines[4].SetStatus(status.StatusError, "transient error",
-		map[string]interface{}{"transient": true, "foo": "bar"})
+	sInfo = status.StatusInfo{
+		Status:  status.StatusError,
+		Message: "transient error",
+		Data:    map[string]interface{}{"transient": true, "foo": "bar"},
+		Since:   &now,
+	}
+	err = s.machines[4].SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
 	hwChars := instance.MustParseHardware("arch=i386", "mem=4G")
 	err = s.machines[4].SetProvisioned("i-am", "fake_nonce", &hwChars)
@@ -398,14 +438,36 @@ func (s *withoutControllerSuite) TestMachinesWithTransientErrorsPermission(c *gc
 	anAuthorizer.Tag = names.NewMachineTag("1")
 	aProvisioner, err := provisioner.NewProvisionerAPI(s.State, s.resources,
 		anAuthorizer)
-	err = s.machines[0].SetStatus(status.StatusStarted, "blah", nil)
+	now := time.Now()
+	sInfo := status.StatusInfo{
+		Status:  status.StatusStarted,
+		Message: "blah",
+		Since:   &now,
+	}
+	err = s.machines[0].SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
-	err = s.machines[1].SetStatus(status.StatusError, "transient error",
-		map[string]interface{}{"transient": true, "foo": "bar"})
+	sInfo = status.StatusInfo{
+		Status:  status.StatusError,
+		Message: "transient error",
+		Data:    map[string]interface{}{"transient": true, "foo": "bar"},
+		Since:   &now,
+	}
+	err = s.machines[1].SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
-	err = s.machines[2].SetStatus(status.StatusError, "error", map[string]interface{}{"transient": false})
+	sInfo = status.StatusInfo{
+		Status:  status.StatusError,
+		Message: "error",
+		Data:    map[string]interface{}{"transient": false},
+		Since:   &now,
+	}
+	err = s.machines[2].SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
-	err = s.machines[3].SetStatus(status.StatusError, "error", nil)
+	sInfo = status.StatusInfo{
+		Status:  status.StatusError,
+		Message: "error",
+		Since:   &now,
+	}
+	err = s.machines[3].SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
 
 	result, err := aProvisioner.MachinesWithTransientErrors()
@@ -431,7 +493,7 @@ func (s *withoutControllerSuite) TestEnsureDead(c *gc.C) {
 		{Tag: s.machines[2].Tag().String()},
 		{Tag: "machine-42"},
 		{Tag: "unit-foo-0"},
-		{Tag: "service-bar"},
+		{Tag: "application-bar"},
 	}}
 	result, err := s.provisioner.EnsureDead(args)
 	c.Assert(err, jc.ErrorIsNil)
@@ -476,7 +538,7 @@ func (s *withoutControllerSuite) TestWatchContainers(c *gc.C) {
 		{MachineTag: s.machines[1].Tag().String(), ContainerType: string(instance.KVM)},
 		{MachineTag: "machine-42", ContainerType: ""},
 		{MachineTag: "unit-foo-0", ContainerType: ""},
-		{MachineTag: "service-bar", ContainerType: ""},
+		{MachineTag: "application-bar", ContainerType: ""},
 	}}
 	result, err := s.provisioner.WatchContainers(args)
 	c.Assert(err, jc.ErrorIsNil)
@@ -513,7 +575,7 @@ func (s *withoutControllerSuite) TestWatchAllContainers(c *gc.C) {
 		{MachineTag: s.machines[1].Tag().String()},
 		{MachineTag: "machine-42"},
 		{MachineTag: "unit-foo-0"},
-		{MachineTag: "service-bar"},
+		{MachineTag: "application-bar"},
 	}}
 	result, err := s.provisioner.WatchAllContainers(args)
 	c.Assert(err, jc.ErrorIsNil)
@@ -555,11 +617,28 @@ func (s *withoutControllerSuite) TestModelConfigNonManager(c *gc.C) {
 }
 
 func (s *withoutControllerSuite) TestStatus(c *gc.C) {
-	err := s.machines[0].SetStatus(status.StatusStarted, "blah", nil)
+	now := time.Now()
+	sInfo := status.StatusInfo{
+		Status:  status.StatusStarted,
+		Message: "blah",
+		Since:   &now,
+	}
+	err := s.machines[0].SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
-	err = s.machines[1].SetStatus(status.StatusStopped, "foo", nil)
+	sInfo = status.StatusInfo{
+		Status:  status.StatusStopped,
+		Message: "foo",
+		Since:   &now,
+	}
+	err = s.machines[1].SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
-	err = s.machines[2].SetStatus(status.StatusError, "not really", map[string]interface{}{"foo": "bar"})
+	sInfo = status.StatusInfo{
+		Status:  status.StatusError,
+		Message: "not really",
+		Data:    map[string]interface{}{"foo": "bar"},
+		Since:   &now,
+	}
+	err = s.machines[2].SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
 
 	args := params.Entities{Entities: []params.Entity{
@@ -568,7 +647,7 @@ func (s *withoutControllerSuite) TestStatus(c *gc.C) {
 		{Tag: s.machines[2].Tag().String()},
 		{Tag: "machine-42"},
 		{Tag: "unit-foo-0"},
-		{Tag: "service-bar"},
+		{Tag: "application-bar"},
 	}}
 	result, err := s.provisioner.Status(args)
 	c.Assert(err, jc.ErrorIsNil)
@@ -583,9 +662,9 @@ func (s *withoutControllerSuite) TestStatus(c *gc.C) {
 	}
 	c.Assert(result, gc.DeepEquals, params.StatusResults{
 		Results: []params.StatusResult{
-			{Status: status.StatusStarted, Info: "blah", Data: map[string]interface{}{}},
-			{Status: status.StatusStopped, Info: "foo", Data: map[string]interface{}{}},
-			{Status: status.StatusError, Info: "not really", Data: map[string]interface{}{"foo": "bar"}},
+			{Status: status.StatusStarted.String(), Info: "blah", Data: map[string]interface{}{}},
+			{Status: status.StatusStopped.String(), Info: "foo", Data: map[string]interface{}{}},
+			{Status: status.StatusError.String(), Info: "not really", Data: map[string]interface{}{"foo": "bar"}},
 			{Error: apiservertesting.NotFoundError("machine 42")},
 			{Error: apiservertesting.ErrUnauthorized},
 			{Error: apiservertesting.ErrUnauthorized},
@@ -604,7 +683,7 @@ func (s *withoutControllerSuite) TestSeries(c *gc.C) {
 		{Tag: s.machines[2].Tag().String()},
 		{Tag: "machine-42"},
 		{Tag: "unit-foo-0"},
-		{Tag: "service-bar"},
+		{Tag: "application-bar"},
 	}}
 	result, err := s.provisioner.Series(args)
 	c.Assert(err, jc.ErrorIsNil)
@@ -697,7 +776,7 @@ func (s *withoutControllerSuite) TestDistributionGroupEnvironManagerAuth(c *gc.C
 		{Tag: "machine-42"},
 		{Tag: "machine-0-lxc-99"},
 		{Tag: "unit-foo-0"},
-		{Tag: "service-bar"},
+		{Tag: "application-bar"},
 	}}
 	result, err := s.provisioner.DistributionGroup(args)
 	c.Assert(err, jc.ErrorIsNil)
@@ -765,7 +844,7 @@ func (s *withoutControllerSuite) TestConstraints(c *gc.C) {
 		{Tag: consMachine.Tag().String()},
 		{Tag: "machine-42"},
 		{Tag: "unit-foo-0"},
-		{Tag: "service-bar"},
+		{Tag: "application-bar"},
 	}}
 	result, err := s.provisioner.Constraints(args)
 	c.Assert(err, jc.ErrorIsNil)
@@ -838,7 +917,7 @@ func (s *withoutControllerSuite) TestSetInstanceInfo(c *gc.C) {
 	},
 		{Tag: "machine-42"},
 		{Tag: "unit-foo-0"},
-		{Tag: "service-bar"},
+		{Tag: "application-bar"},
 	}}
 	result, err := s.provisioner.SetInstanceInfo(args)
 	c.Assert(err, jc.ErrorIsNil)
@@ -907,7 +986,7 @@ func (s *withoutControllerSuite) TestInstanceId(c *gc.C) {
 		{Tag: s.machines[2].Tag().String()},
 		{Tag: "machine-42"},
 		{Tag: "unit-foo-0"},
-		{Tag: "service-bar"},
+		{Tag: "application-bar"},
 	}}
 	result, err := s.provisioner.InstanceId(args)
 	c.Assert(err, jc.ErrorIsNil)
@@ -967,7 +1046,7 @@ func (s *provisionerSuite) getManagerConfig(c *gc.C, typ instance.ContainerType)
 func (s *withoutControllerSuite) TestContainerManagerConfig(c *gc.C) {
 	cfg := s.getManagerConfig(c, instance.KVM)
 	c.Assert(cfg, jc.DeepEquals, map[string]string{
-		container.ConfigName: "juju",
+		container.ConfigModelUUID: coretesting.ModelTag.Id(),
 
 		// dummy provider supports both networking and address
 		// allocation by default, so IP forwarding should be enabled.
@@ -980,7 +1059,7 @@ func (s *withoutControllerSuite) TestContainerManagerConfigNoFeatureFlagNoIPForw
 
 	cfg := s.getManagerConfig(c, instance.KVM)
 	c.Assert(cfg, jc.DeepEquals, map[string]string{
-		container.ConfigName: "juju",
+		container.ConfigModelUUID: coretesting.ModelTag.Id(),
 		// ConfigIPForwarding should be missing.
 	})
 }
@@ -992,7 +1071,7 @@ func (s *withoutControllerSuite) TestContainerManagerConfigNoIPForwarding(c *gc.
 
 	cfg := s.getManagerConfig(c, instance.KVM)
 	c.Assert(cfg, jc.DeepEquals, map[string]string{
-		container.ConfigName: "juju",
+		container.ConfigModelUUID: coretesting.ModelTag.Id(),
 	})
 }
 
@@ -1017,7 +1096,6 @@ func (s *withoutControllerSuite) TestContainerConfig(c *gc.C) {
 	c.Check(results.Proxy, gc.DeepEquals, expectedProxy)
 	c.Check(results.AptProxy, gc.DeepEquals, expectedProxy)
 	c.Check(results.AptMirror, gc.DeepEquals, "http://example.mirror.com")
-	c.Check(results.PreferIPv6, jc.IsFalse)
 	c.Check(results.AllowLXCLoopMounts, jc.IsTrue)
 }
 
@@ -1216,7 +1294,7 @@ func (s *lxcDefaultMTUSuite) SetUpTest(c *gc.C) {
 func (s *lxcDefaultMTUSuite) TestContainerManagerConfigLXCDefaultMTU(c *gc.C) {
 	managerConfig := s.getManagerConfig(c, instance.LXC)
 	c.Assert(managerConfig, jc.DeepEquals, map[string]string{
-		container.ConfigName:          "juju",
+		container.ConfigModelUUID:     coretesting.ModelTag.Id(),
 		container.ConfigLXCDefaultMTU: "9000",
 
 		"use-aufs":                   "false",
@@ -1226,7 +1304,7 @@ func (s *lxcDefaultMTUSuite) TestContainerManagerConfigLXCDefaultMTU(c *gc.C) {
 	// KVM instances are not affected.
 	managerConfig = s.getManagerConfig(c, instance.KVM)
 	c.Assert(managerConfig, jc.DeepEquals, map[string]string{
-		container.ConfigName:         "juju",
+		container.ConfigModelUUID:    coretesting.ModelTag.Id(),
 		container.ConfigIPForwarding: "true",
 	})
 }

@@ -8,7 +8,7 @@ import (
 
 	"github.com/juju/cmd"
 	"github.com/juju/errors"
-	"github.com/juju/names"
+	"gopkg.in/juju/names.v2"
 	"launchpad.net/gnuflag"
 
 	"github.com/juju/juju/api/modelmanager"
@@ -99,6 +99,7 @@ func (c *showModelCommand) Run(ctx *cmd.Context) (err error) {
 }
 
 func (c *showModelCommand) apiModelInfoToModelInfoMap(modelInfo []params.ModelInfo) (map[string]common.ModelInfo, error) {
+	// TODO(perrito666) 2016-05-02 lp:1558657
 	now := time.Now()
 	output := make(map[string]common.ModelInfo)
 	for _, info := range modelInfo {

@@ -21,6 +21,7 @@ import (
 	"github.com/juju/version"
 	"gopkg.in/juju/charmrepo.v2-unstable"
 	"gopkg.in/juju/environschema.v1"
+	"gopkg.in/juju/names.v2"
 	"gopkg.in/macaroon-bakery.v1/bakery"
 
 	"github.com/juju/juju/cert"
@@ -104,8 +105,17 @@ const (
 	// TypeKey is the key for the model's cloud type.
 	TypeKey = "type"
 
+	// AdminSecret is the administrator password.
+	AdminSecretKey = "admin-secret"
+
 	// AgentVersionKey is the key for the model's Juju agent version.
 	AgentVersionKey = "agent-version"
+
+	// ApiPort is the port used for api connections.
+	ApiPort = "api-port"
+
+	// StatePort is the port used for mongo connections.
+	StatePort = "state-port"
 
 	// CACertKey is the key for the controller's CA certificate attribute.
 	CACertKey = "ca-cert"
@@ -222,6 +232,17 @@ const (
 	// on start up.
 	IgnoreMachineAddresses = "ignore-machine-addresses"
 )
+
+// ControllerOnlyConfigAttributes are attributes which are only relevant
+// for a controller, never a model.
+var ControllerOnlyConfigAttributes = []string{
+	ApiPort,
+	StatePort,
+	CACertKey,
+	ControllerUUIDKey,
+	IdentityURL,
+	IdentityPublicKey,
+}
 
 // ParseHarvestMode parses description of harvesting method and
 // returns the representation.
@@ -567,8 +588,8 @@ func Validate(cfg, old *Config) error {
 		}
 	}
 
-	if strings.ContainsAny(cfg.mustString(NameKey), "/\\") {
-		return fmt.Errorf("model name contains unsafe characters")
+	if !names.IsValidModelName(cfg.mustString(NameKey)) {
+		return fmt.Errorf("%q is not a valid name: model names may only contain lowercase letters, digits and hyphens", NameKey)
 	}
 
 	// Check that the agent version parses ok if set explicitly; otherwise leave
@@ -768,24 +789,27 @@ func (c *Config) ControllerUUID() string {
 // DefaultSeries returns the configured default Ubuntu series for the environment,
 // and whether the default series was explicitly configured on the environment.
 func (c *Config) DefaultSeries() (string, bool) {
-	if s, ok := c.defined["default-series"]; ok {
-		if series, ok := s.(string); ok && series != "" {
-			return series, true
-		} else if !ok {
-			logger.Warningf("invalid default-series: %q", s)
-		}
+	s, ok := c.defined["default-series"]
+	if !ok {
+		return "", false
 	}
-	return "", false
+	switch s := s.(type) {
+	case string:
+		return s, s != ""
+	default:
+		logger.Errorf("invalid default-series: %q", s)
+		return "", false
+	}
 }
 
 // StatePort returns the controller port for the environment.
 func (c *Config) StatePort() int {
-	return c.mustInt("state-port")
+	return c.mustInt(StatePort)
 }
 
 // APIPort returns the API server port for the environment.
 func (c *Config) APIPort() int {
-	return c.mustInt("api-port")
+	return c.mustInt(ApiPort)
 }
 
 // NumaCtlPreference returns if numactl is preferred.
@@ -958,7 +982,7 @@ func (c *Config) CAPrivateKey() (key string, ok bool) {
 // AdminSecret returns the administrator password.
 // It's empty if the password has not been set.
 func (c *Config) AdminSecret() string {
-	if s, ok := c.defined["admin-secret"]; ok && s != "" {
+	if s, ok := c.defined[AdminSecretKey]; ok && s != "" {
 		return s.(string)
 	}
 	return ""
@@ -1006,13 +1030,6 @@ func (c *Config) ImageMetadataURL() (string, bool) {
 // Development returns whether the environment is in development mode.
 func (c *Config) Development() bool {
 	return c.defined["development"].(bool)
-}
-
-// PreferIPv6 returns whether IPv6 addresses for API endpoints and
-// machines will be preferred (when available) over IPv4.
-func (c *Config) PreferIPv6() bool {
-	v, _ := c.defined["prefer-ipv6"].(bool)
-	return v
 }
 
 // EnableOSRefreshUpdate returns whether or not newly provisioned
@@ -1316,7 +1333,7 @@ var alwaysOptional = schema.Defaults{
 	// omitted.
 	// TODO(rog) remove this support when we can
 	// remove upgrade compatibility with versions prior to 1.14.
-	"admin-secret":       "", // TODO(rog) omit
+	AdminSecretKey:       "", // TODO(rog) omit
 	"ca-private-key":     "", // TODO(rog) omit
 	"image-metadata-url": "", // TODO(rog) omit
 	AgentMetadataURLKey:  "", // TODO(rog) omit
@@ -1325,14 +1342,13 @@ var alwaysOptional = schema.Defaults{
 
 	// For backward compatibility only - default ports were
 	// not filled out in previous versions of the configuration.
-	"state-port": DefaultStatePort,
-	"api-port":   DefaultAPIPort,
+	StatePort: DefaultStatePort,
+	ApiPort:   DefaultAPIPort,
 	// Previously image-stream could be set to an empty value
 	"image-stream":             "",
 	"test-mode":                false,
 	"proxy-ssh":                false,
 	"lxc-clone-aufs":           false,
-	"prefer-ipv6":              false,
 	"enable-os-refresh-update": schema.Omit,
 	"enable-os-upgrade":        schema.Omit,
 }
@@ -1351,13 +1367,12 @@ func allDefaults() schema.Defaults {
 		"firewall-mode":              FwInstance,
 		"development":                false,
 		"ssl-hostname-verification":  true,
-		"state-port":                 DefaultStatePort,
-		"api-port":                   DefaultAPIPort,
+		StatePort:                    DefaultStatePort,
+		ApiPort:                      DefaultAPIPort,
 		"bootstrap-timeout":          DefaultBootstrapSSHTimeout,
 		"bootstrap-retry-delay":      DefaultBootstrapSSHRetryDelay,
 		"bootstrap-addresses-delay":  DefaultBootstrapSSHAddressesDelay,
 		"proxy-ssh":                  false,
-		"prefer-ipv6":                false,
 		"disable-network-management": false,
 		IgnoreMachineAddresses:       false,
 		SetNumaControlPolicyKey:      DefaultNumaControlPolicy,
@@ -1396,15 +1411,14 @@ var immutableAttributes = []string{
 	UUIDKey,
 	ControllerUUIDKey,
 	"firewall-mode",
-	"state-port",
-	"api-port",
+	StatePort,
+	ApiPort,
 	"bootstrap-timeout",
 	"bootstrap-retry-delay",
 	"bootstrap-addresses-delay",
 	LxcClone,
 	LXCDefaultMTU,
 	"lxc-clone-aufs",
-	"prefer-ipv6",
 	IdentityURL,
 	IdentityPublicKey,
 }
@@ -1435,7 +1449,7 @@ func (cfg *Config) ValidateUnknownAttrs(fields schema.Fields, defaults schema.De
 		if fields[name] == nil {
 			if val, isString := value.(string); isString && val != "" {
 				// only warn about attributes with non-empty string values
-				logger.Warningf("unknown config field %q", name)
+				logger.Errorf("unknown config field %q", name)
 			}
 			result[name] = value
 		}
@@ -1448,11 +1462,11 @@ func (cfg *Config) ValidateUnknownAttrs(fields schema.Fields, defaults schema.De
 func (cfg *Config) GenerateControllerCertAndKey(hostAddresses []string) (string, string, error) {
 	caCert, hasCACert := cfg.CACert()
 	if !hasCACert {
-		return "", "", fmt.Errorf("model configuration has no ca-cert")
+		return "", "", errors.New("model configuration has no ca-cert")
 	}
 	caKey, hasCAKey := cfg.CAPrivateKey()
 	if !hasCAKey {
-		return "", "", fmt.Errorf("model configuration has no ca-private-key")
+		return "", "", errors.New("model configuration has no ca-private-key")
 	}
 	return cert.NewDefaultServer(caCert, caKey, hostAddresses)
 }
@@ -1538,7 +1552,7 @@ func Schema(extra environschema.Fields) (environschema.Fields, error) {
 // the config package.
 // TODO(rog) make this available to external packages.
 var configSchema = environschema.Fields{
-	"admin-secret": {
+	AdminSecretKey: {
 		Description: "The password for the administrator user",
 		Type:        environschema.Tstring,
 		Secret:      true,
@@ -1566,7 +1580,7 @@ var configSchema = environschema.Fields{
 		Type:        environschema.Tbool,
 		Group:       environschema.EnvironGroup,
 	},
-	"api-port": {
+	ApiPort: {
 		Description: "The TCP port for the API servers to listen on",
 		Type:        environschema.Tint,
 		Group:       environschema.EnvironGroup,
@@ -1776,12 +1790,6 @@ global or per instance security groups.`,
 		Type:        environschema.Tstring,
 		Group:       environschema.EnvironGroup,
 	},
-	"prefer-ipv6": {
-		Description: `Whether to prefer IPv6 over IPv4 addresses for API endpoints and machines`,
-		Type:        environschema.Tbool,
-		Immutable:   true,
-		Group:       environschema.EnvironGroup,
-	},
 	ProvisionerHarvestModeKey: {
 		// default: destroyed, but also depends on current setting of ProvisionerSafeModeKey
 		Description: "What to do with unknown machines. See https://jujucharms.com/docs/stable/config-general#juju-lifecycle-and-harvesting (default destroyed)",
@@ -1825,7 +1833,7 @@ global or per instance security groups.`,
 		Type:        environschema.Tstring,
 		Group:       environschema.EnvironGroup,
 	},
-	"state-port": {
+	StatePort: {
 		Description: "Port for the API server to listen on.",
 		Type:        environschema.Tint,
 		Immutable:   true,

@@ -30,7 +30,6 @@ import (
 	"github.com/juju/juju/environs/storage"
 	"github.com/juju/juju/environs/sync"
 	"github.com/juju/juju/environs/tools"
-	"github.com/juju/juju/network"
 	coretools "github.com/juju/juju/tools"
 	jujuversion "github.com/juju/juju/version"
 )
@@ -61,6 +60,13 @@ type BootstrapParams struct {
 	// BootstrapImage, if specified, is the image ID to use for the
 	// initial bootstrap machine.
 	BootstrapImage string
+
+	// Cloud is the name of the cloud that Juju will be bootstrapped in.
+	Cloud string
+
+	// CloudConfig is the set of config attributes to be shared
+	// across all models on the same cloud.
+	CloudConfig map[string]interface{}
 
 	// HostedModelConfig is the set of config attributes to be overlaid
 	// on the controller config to construct the initial hosted model
@@ -100,7 +106,6 @@ type BootstrapParams struct {
 // environment.
 func Bootstrap(ctx environs.BootstrapContext, environ environs.Environ, args BootstrapParams) error {
 	cfg := environ.Config()
-	network.SetPreferIPv6(cfg.PreferIPv6())
 	if secret := cfg.AdminSecret(); secret == "" {
 		return errors.Errorf("model configuration has no admin-secret")
 	}
@@ -247,7 +252,7 @@ func Bootstrap(ctx environs.BootstrapContext, environ environs.Environ, args Boo
 		// even though the user didn't ask for it. We only do
 		// this when the image-stream is not "released" and
 		// the agent version hasn't been specified.
-		logger.Warningf("no prepackaged tools available")
+		logger.Infof("no prepackaged tools available")
 	}
 
 	ctx.Infof("Installing Juju agent on bootstrap instance")
@@ -264,10 +269,11 @@ func Bootstrap(ctx environs.BootstrapContext, environ environs.Environ, args Boo
 	if err := instanceConfig.SetTools(selectedToolsList); err != nil {
 		return errors.Trace(err)
 	}
-	instanceConfig.CustomImageMetadata = customImageMetadata
-	instanceConfig.HostedModelConfig = args.HostedModelConfig
-
-	instanceConfig.GUI = guiArchive(args.GUIDataSourceBaseURL, func(msg string) {
+	instanceConfig.Bootstrap.CustomImageMetadata = customImageMetadata
+	instanceConfig.Bootstrap.ControllerCloud = args.Cloud
+	instanceConfig.Bootstrap.CloudConfig = args.CloudConfig
+	instanceConfig.Bootstrap.HostedModelConfig = args.HostedModelConfig
+	instanceConfig.Bootstrap.GUI = guiArchive(args.GUIDataSourceBaseURL, func(msg string) {
 		ctx.Infof(msg)
 	})
 
@@ -420,7 +426,7 @@ func setBootstrapTools(environ environs.Environ, possibleTools coretools.List) (
 	if !isCompatibleVersion(newVersion, jujuversion.Current) {
 		compatibleVersion, compatibleTools := findCompatibleTools(possibleTools, jujuversion.Current)
 		if len(compatibleTools) == 0 {
-			logger.Warningf(
+			logger.Infof(
 				"failed to find %s tools, will attempt to use %s",
 				jujuversion.Current, newVersion,
 			)
@@ -490,13 +496,10 @@ func setPrivateMetadataSources(env environs.Environ, metadataDir string) ([]*ima
 func validateConstraints(env environs.Environ, cons constraints.Value) error {
 	validator, err := env.ConstraintsValidator()
 	if err != nil {
-		return err
+		return errors.Trace(err)
 	}
 	unsupported, err := validator.Validate(cons)
-	if len(unsupported) > 0 {
-		logger.Warningf("unsupported constraints: %v", unsupported)
-	}
-	return err
+	return errors.Annotatef(err, "unsupported constraints: %v", unsupported)
 }
 
 // guiArchive returns information on the GUI archive that will be uploaded

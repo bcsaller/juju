@@ -5,14 +5,12 @@ package state_test
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"time"
 
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
-	"github.com/juju/names"
 	"github.com/juju/replicaset"
 	gitjujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
@@ -23,8 +21,7 @@ import (
 	"github.com/juju/version"
 	gc "gopkg.in/check.v1"
 	"gopkg.in/juju/charm.v6-unstable"
-	"gopkg.in/macaroon.v1"
-	"gopkg.in/mgo.v2"
+	"gopkg.in/juju/names.v2"
 	"gopkg.in/mgo.v2/bson"
 	mgotxn "gopkg.in/mgo.v2/txn"
 
@@ -42,7 +39,6 @@ import (
 	"github.com/juju/juju/storage/poolmanager"
 	"github.com/juju/juju/storage/provider"
 	"github.com/juju/juju/storage/provider/registry"
-	"github.com/juju/juju/testcharms"
 	"github.com/juju/juju/testing"
 	"github.com/juju/juju/testing/factory"
 	jujuversion "github.com/juju/juju/version"
@@ -57,7 +53,13 @@ var alternatePassword = "bar-12345678901234567890"
 // asserting the behaviour of a given method in each state, and the unit quick-
 // remove change caused many of these to fail.
 func preventUnitDestroyRemove(c *gc.C, u *state.Unit) {
-	err := u.SetAgentStatus(status.StatusIdle, "", nil)
+	now := time.Now()
+	sInfo := status.StatusInfo{
+		Status:  status.StatusIdle,
+		Message: "",
+		Since:   &now,
+	}
+	err := u.SetAgentStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
 }
 
@@ -368,26 +370,26 @@ func (s *MultiEnvStateSuite) TestWatchTwoEnvironments(c *gc.C) {
 				f.MakeUnit(c, &factory.UnitParams{Machine: m})
 			},
 		}, {
-			about: "services",
+			about: "applications",
 			getWatcher: func(st *state.State) interface{} {
 				return st.WatchServices()
 			},
 			triggerEvent: func(st *state.State) {
 				f := factory.NewFactory(st)
-				f.MakeService(c, nil)
+				f.MakeApplication(c, nil)
 			},
 		}, {
 			about: "relations",
 			getWatcher: func(st *state.State) interface{} {
 				f := factory.NewFactory(st)
 				wordpressCharm := f.MakeCharm(c, &factory.CharmParams{Name: "wordpress"})
-				wordpress := f.MakeService(c, &factory.ServiceParams{Name: "wordpress", Charm: wordpressCharm})
+				wordpress := f.MakeApplication(c, &factory.ApplicationParams{Name: "wordpress", Charm: wordpressCharm})
 				return wordpress.WatchRelations()
 			},
 			setUpState: func(st *state.State) bool {
 				f := factory.NewFactory(st)
 				mysqlCharm := f.MakeCharm(c, &factory.CharmParams{Name: "mysql"})
-				f.MakeService(c, &factory.ServiceParams{Name: "mysql", Charm: mysqlCharm})
+				f.MakeApplication(c, &factory.ApplicationParams{Name: "mysql", Charm: mysqlCharm})
 				return false
 			},
 			triggerEvent: func(st *state.State) {
@@ -403,8 +405,8 @@ func (s *MultiEnvStateSuite) TestWatchTwoEnvironments(c *gc.C) {
 			},
 			setUpState: func(st *state.State) bool {
 				f := factory.NewFactory(st)
-				mysql := f.MakeService(c, &factory.ServiceParams{Name: "mysql"})
-				f.MakeUnit(c, &factory.UnitParams{Service: mysql})
+				mysql := f.MakeApplication(c, &factory.ApplicationParams{Name: "mysql"})
+				f.MakeUnit(c, &factory.UnitParams{Application: mysql})
 				return false
 			},
 			triggerEvent: func(st *state.State) {
@@ -421,9 +423,9 @@ func (s *MultiEnvStateSuite) TestWatchTwoEnvironments(c *gc.C) {
 			setUpState: func(st *state.State) bool {
 				f := factory.NewFactory(st)
 				wordpressCharm := f.MakeCharm(c, &factory.CharmParams{Name: "wordpress"})
-				f.MakeService(c, &factory.ServiceParams{Name: "wordpress", Charm: wordpressCharm})
+				f.MakeApplication(c, &factory.ApplicationParams{Name: "wordpress", Charm: wordpressCharm})
 				mysqlCharm := f.MakeCharm(c, &factory.CharmParams{Name: "mysql"})
-				f.MakeService(c, &factory.ServiceParams{Name: "mysql", Charm: mysqlCharm})
+				f.MakeApplication(c, &factory.ApplicationParams{Name: "mysql", Charm: mysqlCharm})
 
 				// add and destroy a relation, so there is something to cleanup.
 				eps, err := st.InferEndpoints("wordpress", "mysql")
@@ -495,7 +497,13 @@ func (s *MultiEnvStateSuite) TestWatchTwoEnvironments(c *gc.C) {
 				m, err := st.Machine("0")
 				c.Assert(err, jc.ErrorIsNil)
 
-				err = m.SetStatus("error", "some status", nil)
+				now := time.Now()
+				sInfo := status.StatusInfo{
+					Status:  status.StatusError,
+					Message: "some status",
+					Since:   &now,
+				}
+				err = m.SetStatus(sInfo)
 				c.Assert(err, jc.ErrorIsNil)
 			},
 		}, {
@@ -506,11 +514,11 @@ func (s *MultiEnvStateSuite) TestWatchTwoEnvironments(c *gc.C) {
 			setUpState: func(st *state.State) bool {
 				f := factory.NewFactory(st)
 				wordpressCharm := f.MakeCharm(c, &factory.CharmParams{Name: "wordpress"})
-				f.MakeService(c, &factory.ServiceParams{Name: "wordpress", Charm: wordpressCharm})
+				f.MakeApplication(c, &factory.ApplicationParams{Name: "wordpress", Charm: wordpressCharm})
 				return false
 			},
 			triggerEvent: func(st *state.State) {
-				svc, err := st.Service("wordpress")
+				svc, err := st.Application("wordpress")
 				c.Assert(err, jc.ErrorIsNil)
 
 				err = svc.UpdateConfigSettings(charm.Settings{"blog-title": "awesome"})
@@ -521,7 +529,7 @@ func (s *MultiEnvStateSuite) TestWatchTwoEnvironments(c *gc.C) {
 			getWatcher: func(st *state.State) interface{} {
 				f := factory.NewFactory(st)
 				dummyCharm := f.MakeCharm(c, &factory.CharmParams{Name: "dummy"})
-				service := f.MakeService(c, &factory.ServiceParams{Name: "dummy", Charm: dummyCharm})
+				service := f.MakeApplication(c, &factory.ApplicationParams{Name: "dummy", Charm: dummyCharm})
 
 				unit, err := service.AddUnit()
 				c.Assert(err, jc.ErrorIsNil)
@@ -541,11 +549,11 @@ func (s *MultiEnvStateSuite) TestWatchTwoEnvironments(c *gc.C) {
 			setUpState: func(st *state.State) bool {
 				f := factory.NewFactory(st)
 				wordpressCharm := f.MakeCharm(c, &factory.CharmParams{Name: "wordpress"})
-				_ = f.MakeService(c, &factory.ServiceParams{Name: "wordpress", Charm: wordpressCharm})
+				_ = f.MakeApplication(c, &factory.ApplicationParams{Name: "wordpress", Charm: wordpressCharm})
 				return false
 			},
 			triggerEvent: func(st *state.State) {
-				wordpress, err := st.Service("wordpress")
+				wordpress, err := st.Application("wordpress")
 				c.Assert(err, jc.ErrorIsNil)
 				err = wordpress.SetMinUnits(2)
 				c.Assert(err, jc.ErrorIsNil)
@@ -718,421 +726,6 @@ func (s *StateSuite) TestIsNotFound(c *gc.C) {
 	err2 := errors.NotFoundf("foo")
 	c.Assert(err1, gc.Not(jc.Satisfies), errors.IsNotFound)
 	c.Assert(err2, jc.Satisfies, errors.IsNotFound)
-}
-
-func (s *StateSuite) dummyCharm(c *gc.C, curlOverride string) state.CharmInfo {
-	info := state.CharmInfo{
-		Charm:       testcharms.Repo.CharmDir("dummy"),
-		StoragePath: "dummy-1",
-		SHA256:      "dummy-1-sha256",
-	}
-	if curlOverride != "" {
-		info.ID = charm.MustParseURL(curlOverride)
-	} else {
-		info.ID = charm.MustParseURL(
-			fmt.Sprintf("local:quantal/%s-%d", info.Charm.Meta().Name, info.Charm.Revision()),
-		)
-	}
-	return info
-}
-
-func (s *StateSuite) TestAddCharm(c *gc.C) {
-	// Check that adding charms from scratch works correctly.
-	info := s.dummyCharm(c, "")
-	dummy, err := s.State.AddCharm(info)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(dummy.URL().String(), gc.Equals, info.ID.String())
-
-	doc := state.CharmDoc{}
-	err = s.charms.FindId(state.DocID(s.State, info.ID.String())).One(&doc)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Logf("%#v", doc)
-	c.Assert(doc.URL, gc.DeepEquals, info.ID)
-}
-
-func (s *StateSuite) TestAddCharmWithAuth(c *gc.C) {
-	// Check that adding charms from scratch works correctly.
-	info := s.dummyCharm(c, "")
-	m, err := macaroon.New([]byte("rootkey"), "id", "loc")
-	c.Assert(err, jc.ErrorIsNil)
-	info.Macaroon = macaroon.Slice{m}
-	dummy, err := s.State.AddCharm(info)
-	c.Assert(err, jc.ErrorIsNil)
-	ms, err := dummy.Macaroon()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(ms, gc.DeepEquals, info.Macaroon)
-}
-
-func (s *StateSuite) TestAddCharmUpdatesPlaceholder(c *gc.C) {
-	// Check that adding charms updates any existing placeholder charm
-	// with the same URL.
-	ch := testcharms.Repo.CharmDir("dummy")
-
-	// Add a placeholder charm.
-	curl := charm.MustParseURL("cs:quantal/dummy-1")
-	err := s.State.AddStoreCharmPlaceholder(curl)
-	c.Assert(err, jc.ErrorIsNil)
-
-	// Add a deployed charm.
-	info := state.CharmInfo{
-		Charm:       ch,
-		ID:          curl,
-		StoragePath: "dummy-1",
-		SHA256:      "dummy-1-sha256",
-	}
-	dummy, err := s.State.AddCharm(info)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(dummy.URL().String(), gc.Equals, curl.String())
-
-	// Charm doc has been updated.
-	var docs []state.CharmDoc
-	err = s.charms.FindId(state.DocID(s.State, curl.String())).All(&docs)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(docs, gc.HasLen, 1)
-	c.Assert(docs[0].URL, gc.DeepEquals, curl)
-	c.Assert(docs[0].StoragePath, gc.DeepEquals, info.StoragePath)
-
-	// No more placeholder charm.
-	_, err = s.State.LatestPlaceholderCharm(curl)
-	c.Assert(err, jc.Satisfies, errors.IsNotFound)
-}
-
-func (s *StateSuite) assertPendingCharmExists(c *gc.C, curl *charm.URL) {
-	// Find charm directly and verify only the charm URL and
-	// PendingUpload are set.
-	doc := state.CharmDoc{}
-	err := s.charms.FindId(state.DocID(s.State, curl.String())).One(&doc)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Logf("%#v", doc)
-	c.Assert(doc.URL, gc.DeepEquals, curl)
-	c.Assert(doc.PendingUpload, jc.IsTrue)
-	c.Assert(doc.Placeholder, jc.IsFalse)
-	c.Assert(doc.Meta, gc.IsNil)
-	c.Assert(doc.Config, gc.IsNil)
-	c.Assert(doc.StoragePath, gc.Equals, "")
-	c.Assert(doc.BundleSha256, gc.Equals, "")
-
-	// Make sure we can't find it with st.Charm().
-	_, err = s.State.Charm(curl)
-	c.Assert(err, jc.Satisfies, errors.IsNotFound)
-}
-
-func (s *StateSuite) TestPrepareLocalCharmUpload(c *gc.C) {
-	// First test the sanity checks.
-	curl, err := s.State.PrepareLocalCharmUpload(charm.MustParseURL("local:quantal/dummy"))
-	c.Assert(err, gc.ErrorMatches, "expected charm URL with revision, got .*")
-	c.Assert(curl, gc.IsNil)
-	curl, err = s.State.PrepareLocalCharmUpload(charm.MustParseURL("cs:quantal/dummy"))
-	c.Assert(err, gc.ErrorMatches, "expected charm URL with local schema, got .*")
-	c.Assert(curl, gc.IsNil)
-
-	// No charm in state, so the call should respect given revision.
-	testCurl := charm.MustParseURL("local:quantal/missing-123")
-	curl, err = s.State.PrepareLocalCharmUpload(testCurl)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(curl, gc.DeepEquals, testCurl)
-	s.assertPendingCharmExists(c, curl)
-
-	// Try adding it again with the same revision and ensure it gets bumped.
-	curl, err = s.State.PrepareLocalCharmUpload(curl)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(curl.Revision, gc.Equals, 124)
-
-	// Also ensure the revision cannot decrease.
-	curl, err = s.State.PrepareLocalCharmUpload(curl.WithRevision(42))
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(curl.Revision, gc.Equals, 125)
-
-	// Check the given revision is respected.
-	curl, err = s.State.PrepareLocalCharmUpload(curl.WithRevision(1234))
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(curl.Revision, gc.Equals, 1234)
-}
-
-func (s *StateSuite) TestPrepareStoreCharmUpload(c *gc.C) {
-	// First test the sanity checks.
-	sch, err := s.State.PrepareStoreCharmUpload(charm.MustParseURL("cs:quantal/dummy"))
-	c.Assert(err, gc.ErrorMatches, "expected charm URL with revision, got .*")
-	c.Assert(sch, gc.IsNil)
-	sch, err = s.State.PrepareStoreCharmUpload(charm.MustParseURL("local:quantal/dummy"))
-	c.Assert(err, gc.ErrorMatches, "expected charm URL with cs schema, got .*")
-	c.Assert(sch, gc.IsNil)
-
-	// No charm in state, so the call should respect given revision.
-	testCurl := charm.MustParseURL("cs:quantal/missing-123")
-	sch, err = s.State.PrepareStoreCharmUpload(testCurl)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(sch.URL(), gc.DeepEquals, testCurl)
-	c.Assert(sch.IsUploaded(), jc.IsFalse)
-
-	s.assertPendingCharmExists(c, sch.URL())
-
-	// Try adding it again with the same revision and ensure we get the same document.
-	schCopy, err := s.State.PrepareStoreCharmUpload(testCurl)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(sch, jc.DeepEquals, schCopy)
-
-	// Now add a charm and try again - we should get the same result
-	// as with AddCharm.
-	info := s.dummyCharm(c, "cs:precise/dummy-2")
-	sch, err = s.State.AddCharm(info)
-	c.Assert(err, jc.ErrorIsNil)
-	schCopy, err = s.State.PrepareStoreCharmUpload(info.ID)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(sch, jc.DeepEquals, schCopy)
-
-	// Finally, try poking around the state with a placeholder and
-	// bundlesha256 to make sure we do the right thing.
-	curl := info.ID.WithRevision(999)
-	first := txn.TestHook{
-		Before: func() {
-			err := s.State.AddStoreCharmPlaceholder(curl)
-			c.Assert(err, jc.ErrorIsNil)
-		},
-		After: func() {
-			err := s.charms.RemoveId(state.DocID(s.State, curl.String()))
-			c.Assert(err, jc.ErrorIsNil)
-		},
-	}
-	second := txn.TestHook{
-		Before: func() {
-			err := s.State.AddStoreCharmPlaceholder(curl)
-			c.Assert(err, jc.ErrorIsNil)
-		},
-		After: func() {
-			err := s.charms.UpdateId(state.DocID(s.State, curl.String()), bson.D{{"$set", bson.D{
-				{"bundlesha256", "fake"}},
-			}})
-			c.Assert(err, jc.ErrorIsNil)
-		},
-	}
-	defer state.SetTestHooks(c, s.State, first, second, first).Check()
-
-	_, err = s.State.PrepareStoreCharmUpload(curl)
-	cause := errors.Cause(err)
-	c.Assert(cause, gc.Equals, txn.ErrExcessiveContention)
-}
-
-func (s *StateSuite) TestUpdateUploadedCharm(c *gc.C) {
-	info := s.dummyCharm(c, "")
-	_, err := s.State.AddCharm(info)
-	c.Assert(err, jc.ErrorIsNil)
-
-	// Test with already uploaded and a missing charms.
-	sch, err := s.State.UpdateUploadedCharm(info)
-	c.Assert(err, gc.ErrorMatches, fmt.Sprintf("charm %q already uploaded", info.ID))
-	c.Assert(sch, gc.IsNil)
-	info.ID = charm.MustParseURL("local:quantal/missing-1")
-	info.SHA256 = "missing"
-	sch, err = s.State.UpdateUploadedCharm(info)
-	c.Assert(err, jc.Satisfies, errors.IsNotFound)
-	c.Assert(sch, gc.IsNil)
-
-	// Test with with an uploaded local charm.
-	_, err = s.State.PrepareLocalCharmUpload(info.ID)
-	c.Assert(err, jc.ErrorIsNil)
-
-	m, err := macaroon.New([]byte("rootkey"), "id", "loc")
-	c.Assert(err, jc.ErrorIsNil)
-	info.Macaroon = macaroon.Slice{m}
-	c.Assert(err, jc.ErrorIsNil)
-	sch, err = s.State.UpdateUploadedCharm(info)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(sch.URL(), gc.DeepEquals, info.ID)
-	c.Assert(sch.Revision(), gc.Equals, info.ID.Revision)
-	c.Assert(sch.IsUploaded(), jc.IsTrue)
-	c.Assert(sch.IsPlaceholder(), jc.IsFalse)
-	c.Assert(sch.Meta(), gc.DeepEquals, info.Charm.Meta())
-	c.Assert(sch.Config(), gc.DeepEquals, info.Charm.Config())
-	c.Assert(sch.StoragePath(), gc.DeepEquals, info.StoragePath)
-	c.Assert(sch.BundleSha256(), gc.Equals, "missing")
-	ms, err := sch.Macaroon()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(ms, gc.DeepEquals, info.Macaroon)
-}
-
-func (s *StateSuite) TestUpdateUploadedCharmEscapesSpecialCharsInConfig(c *gc.C) {
-	// Make sure when we have mongodb special characters like "$" and
-	// "." in the name of any charm config option, we do proper
-	// escaping before storing them and unescaping after loading. See
-	// also http://pad.lv/1308146.
-
-	// Clone the dummy charm and change the config.
-	configWithProblematicKeys := []byte(`
-options:
-  $bad.key: {default: bad, description: bad, type: string}
-  not.ok.key: {description: not ok, type: int}
-  valid-key: {description: all good, type: boolean}
-  still$bad.: {description: not good, type: float}
-  $.$: {description: awful, type: string}
-  ...: {description: oh boy, type: int}
-  just$: {description: no no, type: float}
-`[1:])
-	chDir := testcharms.Repo.ClonedDirPath(c.MkDir(), "dummy")
-	err := utils.AtomicWriteFile(
-		filepath.Join(chDir, "config.yaml"),
-		configWithProblematicKeys,
-		0666,
-	)
-	c.Assert(err, jc.ErrorIsNil)
-	ch, err := charm.ReadCharmDir(chDir)
-	c.Assert(err, jc.ErrorIsNil)
-	missingCurl := charm.MustParseURL("local:quantal/missing-1")
-	storagePath := "dummy-1"
-
-	preparedCurl, err := s.State.PrepareLocalCharmUpload(missingCurl)
-	c.Assert(err, jc.ErrorIsNil)
-	info := state.CharmInfo{
-		Charm:       ch,
-		ID:          preparedCurl,
-		StoragePath: "dummy-1",
-		SHA256:      "missing",
-	}
-	sch, err := s.State.UpdateUploadedCharm(info)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(sch.URL(), gc.DeepEquals, missingCurl)
-	c.Assert(sch.Revision(), gc.Equals, missingCurl.Revision)
-	c.Assert(sch.IsUploaded(), jc.IsTrue)
-	c.Assert(sch.IsPlaceholder(), jc.IsFalse)
-	c.Assert(sch.Meta(), gc.DeepEquals, ch.Meta())
-	c.Assert(sch.Config(), gc.DeepEquals, ch.Config())
-	c.Assert(sch.StoragePath(), gc.DeepEquals, storagePath)
-	c.Assert(sch.BundleSha256(), gc.Equals, "missing")
-}
-
-func (s *StateSuite) assertPlaceholderCharmExists(c *gc.C, curl *charm.URL) {
-	// Find charm directly and verify only the charm URL and
-	// Placeholder are set.
-	doc := state.CharmDoc{}
-	err := s.charms.FindId(state.DocID(s.State, curl.String())).One(&doc)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(doc.URL, gc.DeepEquals, curl)
-	c.Assert(doc.PendingUpload, jc.IsFalse)
-	c.Assert(doc.Placeholder, jc.IsTrue)
-	c.Assert(doc.Meta, gc.IsNil)
-	c.Assert(doc.Config, gc.IsNil)
-	c.Assert(doc.StoragePath, gc.Equals, "")
-	c.Assert(doc.BundleSha256, gc.Equals, "")
-
-	// Make sure we can't find it with st.Charm().
-	_, err = s.State.Charm(curl)
-	c.Assert(err, jc.Satisfies, errors.IsNotFound)
-}
-
-func (s *StateSuite) TestLatestPlaceholderCharm(c *gc.C) {
-	// Add a deployed charm
-	info := s.dummyCharm(c, "cs:quantal/dummy-1")
-	_, err := s.State.AddCharm(info)
-	c.Assert(err, jc.ErrorIsNil)
-
-	// Deployed charm not found.
-	_, err = s.State.LatestPlaceholderCharm(info.ID)
-	c.Assert(err, jc.Satisfies, errors.IsNotFound)
-
-	// Add a charm reference
-	curl2 := charm.MustParseURL("cs:quantal/dummy-2")
-	err = s.State.AddStoreCharmPlaceholder(curl2)
-	c.Assert(err, jc.ErrorIsNil)
-	s.assertPlaceholderCharmExists(c, curl2)
-
-	// Use a URL with an arbitrary rev to search.
-	curl := charm.MustParseURL("cs:quantal/dummy-23")
-	pending, err := s.State.LatestPlaceholderCharm(curl)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(pending.URL(), gc.DeepEquals, curl2)
-	c.Assert(pending.IsPlaceholder(), jc.IsTrue)
-	c.Assert(pending.Meta(), gc.IsNil)
-	c.Assert(pending.Config(), gc.IsNil)
-	c.Assert(pending.StoragePath(), gc.Equals, "")
-	c.Assert(pending.BundleSha256(), gc.Equals, "")
-}
-
-func (s *StateSuite) TestAddStoreCharmPlaceholderErrors(c *gc.C) {
-	ch := testcharms.Repo.CharmDir("dummy")
-	curl := charm.MustParseURL(
-		fmt.Sprintf("local:quantal/%s-%d", ch.Meta().Name, ch.Revision()),
-	)
-	err := s.State.AddStoreCharmPlaceholder(curl)
-	c.Assert(err, gc.ErrorMatches, "expected charm URL with cs schema, got .*")
-
-	curl = charm.MustParseURL("cs:quantal/dummy")
-	err = s.State.AddStoreCharmPlaceholder(curl)
-	c.Assert(err, gc.ErrorMatches, "expected charm URL with revision, got .*")
-}
-
-func (s *StateSuite) TestAddStoreCharmPlaceholder(c *gc.C) {
-	curl := charm.MustParseURL("cs:quantal/dummy-1")
-	err := s.State.AddStoreCharmPlaceholder(curl)
-	c.Assert(err, jc.ErrorIsNil)
-	s.assertPlaceholderCharmExists(c, curl)
-
-	// Add the same one again, should be a no-op
-	err = s.State.AddStoreCharmPlaceholder(curl)
-	c.Assert(err, jc.ErrorIsNil)
-	s.assertPlaceholderCharmExists(c, curl)
-}
-
-func (s *StateSuite) assertAddStoreCharmPlaceholder(c *gc.C) (*charm.URL, *charm.URL, *state.Charm) {
-	// Add a deployed charm
-	info := s.dummyCharm(c, "cs:quantal/dummy-1")
-	dummy, err := s.State.AddCharm(info)
-	c.Assert(err, jc.ErrorIsNil)
-
-	// Add a charm placeholder
-	curl2 := charm.MustParseURL("cs:quantal/dummy-2")
-	err = s.State.AddStoreCharmPlaceholder(curl2)
-	c.Assert(err, jc.ErrorIsNil)
-	s.assertPlaceholderCharmExists(c, curl2)
-
-	// Deployed charm is still there.
-	existing, err := s.State.Charm(info.ID)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(existing, jc.DeepEquals, dummy)
-
-	return info.ID, curl2, dummy
-}
-
-func (s *StateSuite) TestAddStoreCharmPlaceholderLeavesDeployedCharmsAlone(c *gc.C) {
-	s.assertAddStoreCharmPlaceholder(c)
-}
-
-func (s *StateSuite) TestAddStoreCharmPlaceholderDeletesOlder(c *gc.C) {
-	curl, curlOldRef, dummy := s.assertAddStoreCharmPlaceholder(c)
-
-	// Add a new charm placeholder
-	curl3 := charm.MustParseURL("cs:quantal/dummy-3")
-	err := s.State.AddStoreCharmPlaceholder(curl3)
-	c.Assert(err, jc.ErrorIsNil)
-	s.assertPlaceholderCharmExists(c, curl3)
-
-	// Deployed charm is still there.
-	existing, err := s.State.Charm(curl)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(existing, jc.DeepEquals, dummy)
-
-	// Older charm placeholder is gone.
-	doc := state.CharmDoc{}
-	err = s.charms.FindId(curlOldRef).One(&doc)
-	c.Assert(err, gc.Equals, mgo.ErrNotFound)
-}
-
-func (s *StateSuite) TestAllCharms(c *gc.C) {
-	// Add a deployed charm
-	info := s.dummyCharm(c, "cs:quantal/dummy-1")
-	sch, err := s.State.AddCharm(info)
-	c.Assert(err, jc.ErrorIsNil)
-
-	// Add a charm reference
-	curl2 := charm.MustParseURL("cs:quantal/dummy-2")
-	err = s.State.AddStoreCharmPlaceholder(curl2)
-	c.Assert(err, jc.ErrorIsNil)
-
-	charms, err := s.State.AllCharms()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(charms, gc.HasLen, 2)
-
-	c.Assert(charms[0], gc.DeepEquals, sch)
-	c.Assert(charms[1].URL(), gc.DeepEquals, curl2)
 }
 
 func (s *StateSuite) AssertMachineCount(c *gc.C, expect int) {
@@ -1743,11 +1336,11 @@ func (s *StateSuite) TestAllRelations(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 	wordpressCharm := s.AddTestingCharm(c, "wordpress")
 	for i := 0; i < numRelations; i++ {
-		serviceName := fmt.Sprintf("wordpress%d", i)
-		wordpress := s.AddTestingService(c, serviceName, wordpressCharm)
+		applicationname := fmt.Sprintf("wordpress%d", i)
+		wordpress := s.AddTestingService(c, applicationname, wordpressCharm)
 		_, err = wordpress.AddUnit()
 		c.Assert(err, jc.ErrorIsNil)
-		eps, err := s.State.InferEndpoints(serviceName, "mysql")
+		eps, err := s.State.InferEndpoints(applicationname, "mysql")
 		c.Assert(err, jc.ErrorIsNil)
 		_, err = s.State.AddRelation(eps...)
 		c.Assert(err, jc.ErrorIsNil)
@@ -1762,38 +1355,38 @@ func (s *StateSuite) TestAllRelations(c *gc.C) {
 	}
 }
 
-func (s *StateSuite) TestAddService(c *gc.C) {
+func (s *StateSuite) TestAddApplication(c *gc.C) {
 	ch := s.AddTestingCharm(c, "dummy")
-	_, err := s.State.AddService(state.AddServiceArgs{Name: "haha/borken", Owner: s.Owner.String(), Charm: ch})
-	c.Assert(err, gc.ErrorMatches, `cannot add service "haha/borken": invalid name`)
-	_, err = s.State.Service("haha/borken")
-	c.Assert(err, gc.ErrorMatches, `"haha/borken" is not a valid service name`)
+	_, err := s.State.AddApplication(state.AddApplicationArgs{Name: "haha/borken", Owner: s.Owner.String(), Charm: ch})
+	c.Assert(err, gc.ErrorMatches, `cannot add application "haha/borken": invalid name`)
+	_, err = s.State.Application("haha/borken")
+	c.Assert(err, gc.ErrorMatches, `"haha/borken" is not a valid application name`)
 
 	// set that a nil charm is handled correctly
-	_, err = s.State.AddService(state.AddServiceArgs{Name: "umadbro", Owner: s.Owner.String()})
-	c.Assert(err, gc.ErrorMatches, `cannot add service "umadbro": charm is nil`)
+	_, err = s.State.AddApplication(state.AddApplicationArgs{Name: "umadbro", Owner: s.Owner.String()})
+	c.Assert(err, gc.ErrorMatches, `cannot add application "umadbro": charm is nil`)
 
 	insettings := charm.Settings{"tuning": "optimized"}
 
-	wordpress, err := s.State.AddService(state.AddServiceArgs{Name: "wordpress", Owner: s.Owner.String(), Charm: ch, Settings: insettings})
+	wordpress, err := s.State.AddApplication(state.AddApplicationArgs{Name: "wordpress", Owner: s.Owner.String(), Charm: ch, Settings: insettings})
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(wordpress.Name(), gc.Equals, "wordpress")
 	outsettings, err := wordpress.ConfigSettings()
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(outsettings, gc.DeepEquals, insettings)
 
-	mysql, err := s.State.AddService(state.AddServiceArgs{Name: "mysql", Owner: s.Owner.String(), Charm: ch})
+	mysql, err := s.State.AddApplication(state.AddApplicationArgs{Name: "mysql", Owner: s.Owner.String(), Charm: ch})
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(mysql.Name(), gc.Equals, "mysql")
 
 	// Check that retrieving the new created services works correctly.
-	wordpress, err = s.State.Service("wordpress")
+	wordpress, err = s.State.Application("wordpress")
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(wordpress.Name(), gc.Equals, "wordpress")
 	ch, _, err = wordpress.Charm()
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(ch.URL(), gc.DeepEquals, ch.URL())
-	mysql, err = s.State.Service("mysql")
+	mysql, err = s.State.Application("mysql")
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(mysql.Name(), gc.Equals, "mysql")
 	ch, _, err = mysql.Charm()
@@ -1808,8 +1401,8 @@ func (s *StateSuite) TestAddServiceEnvironmentDying(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 	err = env.Destroy()
 	c.Assert(err, jc.ErrorIsNil)
-	_, err = s.State.AddService(state.AddServiceArgs{Name: "s1", Owner: s.Owner.String(), Charm: charm})
-	c.Assert(err, gc.ErrorMatches, `cannot add service "s1": model "testenv" is no longer alive`)
+	_, err = s.State.AddApplication(state.AddApplicationArgs{Name: "s1", Owner: s.Owner.String(), Charm: charm})
+	c.Assert(err, gc.ErrorMatches, `cannot add application "s1": model "testenv" is no longer alive`)
 }
 
 func (s *StateSuite) TestAddServiceEnvironmentMigrating(c *gc.C) {
@@ -1819,8 +1412,8 @@ func (s *StateSuite) TestAddServiceEnvironmentMigrating(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 	err = env.SetMigrationMode(state.MigrationModeExporting)
 	c.Assert(err, jc.ErrorIsNil)
-	_, err = s.State.AddService(state.AddServiceArgs{Name: "s1", Owner: s.Owner.String(), Charm: charm})
-	c.Assert(err, gc.ErrorMatches, `cannot add service "s1": model "testenv" is being migrated`)
+	_, err = s.State.AddApplication(state.AddApplicationArgs{Name: "s1", Owner: s.Owner.String(), Charm: charm})
+	c.Assert(err, gc.ErrorMatches, `cannot add application "s1": model "testenv" is being migrated`)
 }
 
 func (s *StateSuite) TestAddServiceEnvironmentDyingAfterInitial(c *gc.C) {
@@ -1834,37 +1427,37 @@ func (s *StateSuite) TestAddServiceEnvironmentDyingAfterInitial(c *gc.C) {
 		c.Assert(env.Life(), gc.Equals, state.Alive)
 		c.Assert(env.Destroy(), gc.IsNil)
 	}).Check()
-	_, err = s.State.AddService(state.AddServiceArgs{Name: "s1", Owner: s.Owner.String(), Charm: charm})
-	c.Assert(err, gc.ErrorMatches, `cannot add service "s1": model "testenv" is no longer alive`)
+	_, err = s.State.AddApplication(state.AddApplicationArgs{Name: "s1", Owner: s.Owner.String(), Charm: charm})
+	c.Assert(err, gc.ErrorMatches, `cannot add application "s1": model "testenv" is no longer alive`)
 }
 
 func (s *StateSuite) TestServiceNotFound(c *gc.C) {
-	_, err := s.State.Service("bummer")
-	c.Assert(err, gc.ErrorMatches, `service "bummer" not found`)
+	_, err := s.State.Application("bummer")
+	c.Assert(err, gc.ErrorMatches, `application "bummer" not found`)
 	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func (s *StateSuite) TestAddServiceNoTag(c *gc.C) {
 	charm := s.AddTestingCharm(c, "dummy")
-	_, err := s.State.AddService(state.AddServiceArgs{Name: "wordpress", Owner: "admin", Charm: charm})
-	c.Assert(err, gc.ErrorMatches, "cannot add service \"wordpress\": Invalid ownertag admin: \"admin\" is not a valid tag")
+	_, err := s.State.AddApplication(state.AddApplicationArgs{Name: "wordpress", Owner: "admin", Charm: charm})
+	c.Assert(err, gc.ErrorMatches, "cannot add application \"wordpress\": Invalid ownertag admin: \"admin\" is not a valid tag")
 }
 
 func (s *StateSuite) TestAddServiceNotUserTag(c *gc.C) {
 	charm := s.AddTestingCharm(c, "dummy")
-	_, err := s.State.AddService(state.AddServiceArgs{Name: "wordpress", Owner: "machine-3", Charm: charm})
-	c.Assert(err, gc.ErrorMatches, "cannot add service \"wordpress\": Invalid ownertag machine-3: \"machine-3\" is not a valid user tag")
+	_, err := s.State.AddApplication(state.AddApplicationArgs{Name: "wordpress", Owner: "machine-3", Charm: charm})
+	c.Assert(err, gc.ErrorMatches, "cannot add application \"wordpress\": Invalid ownertag machine-3: \"machine-3\" is not a valid user tag")
 }
 
 func (s *StateSuite) TestAddServiceNonExistentUser(c *gc.C) {
 	charm := s.AddTestingCharm(c, "dummy")
-	_, err := s.State.AddService(state.AddServiceArgs{Name: "wordpress", Owner: "user-notAuser", Charm: charm})
-	c.Assert(err, gc.ErrorMatches, `cannot add service "wordpress": model user "notAuser@local" not found`)
+	_, err := s.State.AddApplication(state.AddApplicationArgs{Name: "wordpress", Owner: "user-notAuser", Charm: charm})
+	c.Assert(err, gc.ErrorMatches, `cannot add application "wordpress": model user "notAuser@local" not found`)
 }
 
 func (s *StateSuite) TestAddServiceWithDefaultBindings(c *gc.C) {
 	ch := s.AddMetaCharm(c, "mysql", metaBase, 42)
-	svc, err := s.State.AddService(state.AddServiceArgs{
+	svc, err := s.State.AddApplication(state.AddApplicationArgs{
 		Name:  "yoursql",
 		Owner: s.Owner.String(),
 		Charm: ch,
@@ -1898,7 +1491,7 @@ func (s *StateSuite) TestAddServiceWithSpecifiedBindings(c *gc.C) {
 
 	// Specify some bindings, but not all when adding the service.
 	ch := s.AddMetaCharm(c, "mysql", metaBase, 43)
-	svc, err := s.State.AddService(state.AddServiceArgs{
+	svc, err := s.State.AddApplication(state.AddApplicationArgs{
 		Name:  "yoursql",
 		Owner: s.Owner.String(),
 		Charm: ch,
@@ -1963,13 +1556,13 @@ func (s *StateSuite) TestAddServiceWithInvalidBindings(c *gc.C) {
 	}} {
 		c.Logf("test #%d: %s", i, test.about)
 
-		_, err := s.State.AddService(state.AddServiceArgs{
+		_, err := s.State.AddApplication(state.AddApplicationArgs{
 			Name:             "yoursql",
 			Owner:            s.Owner.String(),
 			Charm:            charm,
 			EndpointBindings: test.bindings,
 		})
-		c.Check(err, gc.ErrorMatches, `cannot add service "yoursql": `+test.expectedError)
+		c.Check(err, gc.ErrorMatches, `cannot add application "yoursql": `+test.expectedError)
 		c.Check(err, jc.Satisfies, errors.IsNotValid)
 	}
 }
@@ -1979,31 +1572,31 @@ func (s *StateSuite) TestAddServiceMachinePlacementInvalidSeries(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 
 	charm := s.AddTestingCharm(c, "dummy")
-	_, err = s.State.AddService(state.AddServiceArgs{
+	_, err = s.State.AddApplication(state.AddApplicationArgs{
 		Name: "wordpress", Owner: s.Owner.String(), Charm: charm,
 		Placement: []*instance.Placement{
 			{instance.MachineScope, m.Id()},
 		},
 	})
-	c.Assert(err, gc.ErrorMatches, "cannot add service \"wordpress\": cannot deploy to machine .*: series does not match")
+	c.Assert(err, gc.ErrorMatches, "cannot add application \"wordpress\": cannot deploy to machine .*: series does not match")
 }
 
 func (s *StateSuite) TestAddServiceIncompatibleOSWithSeriesInURL(c *gc.C) {
 	charm := s.AddTestingCharm(c, "dummy")
 	// A charm with a series in its URL is implicitly supported by that
 	// series only.
-	_, err := s.State.AddService(state.AddServiceArgs{
+	_, err := s.State.AddApplication(state.AddApplicationArgs{
 		Name: "wordpress", Owner: s.Owner.String(), Charm: charm,
 		Series: "centos7",
 	})
-	c.Assert(err, gc.ErrorMatches, `cannot add service "wordpress": series "centos7" \(OS \"CentOS"\) not supported by charm, supported series are "quantal"`)
+	c.Assert(err, gc.ErrorMatches, `cannot add application "wordpress": series "centos7" \(OS \"CentOS"\) not supported by charm, supported series are "quantal"`)
 }
 
 func (s *StateSuite) TestAddServiceCompatibleOSWithSeriesInURL(c *gc.C) {
 	charm := s.AddTestingCharm(c, "dummy")
 	// A charm with a series in its URL is implicitly supported by that
 	// series only.
-	_, err := s.State.AddService(state.AddServiceArgs{
+	_, err := s.State.AddApplication(state.AddApplicationArgs{
 		Name: "wordpress", Owner: s.Owner.String(), Charm: charm,
 		Series: charm.URL().Series,
 	})
@@ -2013,7 +1606,7 @@ func (s *StateSuite) TestAddServiceCompatibleOSWithSeriesInURL(c *gc.C) {
 func (s *StateSuite) TestAddServiceCompatibleOSWithNoExplicitSupportedSeries(c *gc.C) {
 	// If a charm doesn't declare any series, we can add it with any series we choose.
 	charm := s.AddSeriesCharm(c, "dummy", "")
-	_, err := s.State.AddService(state.AddServiceArgs{
+	_, err := s.State.AddApplication(state.AddApplicationArgs{
 		Name: "wordpress", Owner: s.Owner.String(), Charm: charm,
 		Series: "quantal",
 	})
@@ -2024,29 +1617,29 @@ func (s *StateSuite) TestAddServiceOSIncompatibleWithSupportedSeries(c *gc.C) {
 	charm := state.AddTestingCharmMultiSeries(c, s.State, "multi-series")
 	// A charm with supported series can only be force-deployed to series
 	// of the same operating systems as the suppoted series.
-	_, err := s.State.AddService(state.AddServiceArgs{
+	_, err := s.State.AddApplication(state.AddApplicationArgs{
 		Name: "wordpress", Owner: s.Owner.String(), Charm: charm,
 		Series: "centos7",
 	})
-	c.Assert(err, gc.ErrorMatches, `cannot add service "wordpress": series "centos7" \(OS "CentOS"\) not supported by charm, supported series are "precise, trusty"`)
+	c.Assert(err, gc.ErrorMatches, `cannot add application "wordpress": series "centos7" \(OS "CentOS"\) not supported by charm, supported series are "precise, trusty"`)
 }
 
-func (s *StateSuite) TestAllServices(c *gc.C) {
+func (s *StateSuite) TestAllApplications(c *gc.C) {
 	charm := s.AddTestingCharm(c, "dummy")
-	services, err := s.State.AllServices()
+	services, err := s.State.AllApplications()
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(len(services), gc.Equals, 0)
 
 	// Check that after adding services the result is ok.
-	_, err = s.State.AddService(state.AddServiceArgs{Name: "wordpress", Owner: s.Owner.String(), Charm: charm})
+	_, err = s.State.AddApplication(state.AddApplicationArgs{Name: "wordpress", Owner: s.Owner.String(), Charm: charm})
 	c.Assert(err, jc.ErrorIsNil)
-	services, err = s.State.AllServices()
+	services, err = s.State.AllApplications()
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(len(services), gc.Equals, 1)
 
-	_, err = s.State.AddService(state.AddServiceArgs{Name: "mysql", Owner: s.Owner.String(), Charm: charm})
+	_, err = s.State.AddApplication(state.AddApplicationArgs{Name: "mysql", Owner: s.Owner.String(), Charm: charm})
 	c.Assert(err, jc.ErrorIsNil)
-	services, err = s.State.AllServices()
+	services, err = s.State.AllApplications()
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(services, gc.HasLen, 2)
 
@@ -2085,7 +1678,7 @@ var inferEndpointsTests = []struct {
 	}, {
 		summary: "unknown service",
 		inputs:  [][]string{{"wooble"}},
-		err:     `service "wooble" not found`,
+		err:     `application "wooble" not found`,
 	}, {
 		summary: "invalid relations",
 		inputs: [][]string{
@@ -2105,7 +1698,7 @@ var inferEndpointsTests = []struct {
 		summary: "container scoped relations between 2 subordinates is ok",
 		inputs:  [][]string{{"lg:logging-directory", "lg2:logging-client"}},
 		eps: []state.Endpoint{{
-			ServiceName: "lg",
+			ApplicationName: "lg",
 			Relation: charm.Relation{
 				Name:      "logging-directory",
 				Role:      "requirer",
@@ -2113,7 +1706,7 @@ var inferEndpointsTests = []struct {
 				Limit:     1,
 				Scope:     charm.ScopeContainer,
 			}}, {
-			ServiceName: "lg2",
+			ApplicationName: "lg2",
 			Relation: charm.Relation{
 				Name:      "logging-client",
 				Role:      "provider",
@@ -2130,7 +1723,7 @@ var inferEndpointsTests = []struct {
 			{"rk1:ring"},
 		},
 		eps: []state.Endpoint{{
-			ServiceName: "rk1",
+			ApplicationName: "rk1",
 			Relation: charm.Relation{
 				Name:      "ring",
 				Interface: "riak",
@@ -2153,7 +1746,7 @@ var inferEndpointsTests = []struct {
 			{"ms:dev", "wp:db"},
 		},
 		eps: []state.Endpoint{{
-			ServiceName: "ms",
+			ApplicationName: "ms",
 			Relation: charm.Relation{
 				Interface: "mysql",
 				Name:      "dev",
@@ -2162,7 +1755,7 @@ var inferEndpointsTests = []struct {
 				Limit:     2,
 			},
 		}, {
-			ServiceName: "wp",
+			ApplicationName: "wp",
 			Relation: charm.Relation{
 				Interface: "mysql",
 				Name:      "db",
@@ -2175,7 +1768,7 @@ var inferEndpointsTests = []struct {
 		summary: "explicit logging relation is preferred over implicit juju-info",
 		inputs:  [][]string{{"lg", "wp"}},
 		eps: []state.Endpoint{{
-			ServiceName: "lg",
+			ApplicationName: "lg",
 			Relation: charm.Relation{
 				Interface: "logging",
 				Name:      "logging-directory",
@@ -2184,7 +1777,7 @@ var inferEndpointsTests = []struct {
 				Limit:     1,
 			},
 		}, {
-			ServiceName: "wp",
+			ApplicationName: "wp",
 			Relation: charm.Relation{
 				Interface: "logging",
 				Name:      "logging-dir",
@@ -2200,7 +1793,7 @@ var inferEndpointsTests = []struct {
 			{"lg:info", "wp:juju-info"},
 		},
 		eps: []state.Endpoint{{
-			ServiceName: "lg",
+			ApplicationName: "lg",
 			Relation: charm.Relation{
 				Interface: "juju-info",
 				Name:      "info",
@@ -2209,7 +1802,7 @@ var inferEndpointsTests = []struct {
 				Limit:     1,
 			},
 		}, {
-			ServiceName: "wp",
+			ApplicationName: "wp",
 			Relation: charm.Relation{
 				Interface: "juju-info",
 				Name:      "juju-info",
@@ -2221,7 +1814,7 @@ var inferEndpointsTests = []struct {
 		summary: "implicit relations will be chosen if there are no other options",
 		inputs:  [][]string{{"lg", "ms"}},
 		eps: []state.Endpoint{{
-			ServiceName: "lg",
+			ApplicationName: "lg",
 			Relation: charm.Relation{
 				Interface: "juju-info",
 				Name:      "info",
@@ -2230,7 +1823,7 @@ var inferEndpointsTests = []struct {
 				Limit:     1,
 			},
 		}, {
-			ServiceName: "ms",
+			ApplicationName: "ms",
 			Relation: charm.Relation{
 				Interface: "juju-info",
 				Name:      "juju-info",
@@ -2265,23 +1858,6 @@ func (s *StateSuite) TestInferEndpoints(c *gc.C) {
 			}
 		}
 	}
-}
-
-func (s *StateSuite) TestModelConfig(c *gc.C) {
-	attrs := map[string]interface{}{
-		"authorized-keys": "different-keys",
-		"arbitrary-key":   "shazam!",
-	}
-	cfg, err := s.State.ModelConfig()
-	c.Assert(err, jc.ErrorIsNil)
-	err = s.State.UpdateModelConfig(attrs, nil, nil)
-	c.Assert(err, jc.ErrorIsNil)
-	cfg, err = cfg.Apply(attrs)
-	c.Assert(err, jc.ErrorIsNil)
-	oldCfg, err := s.State.ModelConfig()
-	c.Assert(err, jc.ErrorIsNil)
-
-	c.Assert(oldCfg, gc.DeepEquals, cfg)
 }
 
 func (s *StateSuite) TestModelConstraints(c *gc.C) {
@@ -2358,7 +1934,7 @@ func (s *StateSuite) TestWatchModelsBulkEvents(c *gc.C) {
 	st1 := s.Factory.MakeModel(c, nil)
 	defer st1.Close()
 	// Add a service so Destroy doesn't advance to Dead.
-	svc := factory.NewFactory(st1).MakeService(c, nil)
+	svc := factory.NewFactory(st1).MakeApplication(c, nil)
 	dying, err := st1.Model()
 	c.Assert(err, jc.ErrorIsNil)
 	err = dying.Destroy()
@@ -2401,7 +1977,7 @@ func (s *StateSuite) TestWatchModelsLifecycle(c *gc.C) {
 	// Add a non-empty model: reported.
 	st1 := s.Factory.MakeModel(c, nil)
 	defer st1.Close()
-	svc := factory.NewFactory(st1).MakeService(c, nil)
+	svc := factory.NewFactory(st1).MakeApplication(c, nil)
 	env, err := st1.Model()
 	c.Assert(err, jc.ErrorIsNil)
 	wc.AssertChange(env.UUID())
@@ -2466,8 +2042,8 @@ func (s *StateSuite) TestWatchServicesLifecycle(c *gc.C) {
 	wc.AssertNoChange()
 
 	// Add a service: reported.
-	service := s.AddTestingService(c, "service", s.AddTestingCharm(c, "dummy"))
-	wc.AssertChange("service")
+	service := s.AddTestingService(c, "application", s.AddTestingCharm(c, "dummy"))
+	wc.AssertChange("application")
 	wc.AssertNoChange()
 
 	// Change the service: not reported.
@@ -2478,13 +2054,13 @@ func (s *StateSuite) TestWatchServicesLifecycle(c *gc.C) {
 	// Make it Dying: reported.
 	err = service.Destroy()
 	c.Assert(err, jc.ErrorIsNil)
-	wc.AssertChange("service")
+	wc.AssertChange("application")
 	wc.AssertNoChange()
 
 	// Make it Dead(/removed): reported.
 	err = keepDying.Destroy()
 	c.Assert(err, jc.ErrorIsNil)
-	wc.AssertChange("service")
+	wc.AssertChange("application")
 	wc.AssertNoChange()
 }
 
@@ -2826,37 +2402,6 @@ func (s *StateSuite) TestWatchControllerInfo(c *gc.C) {
 	})
 }
 
-func (s *StateSuite) TestAdditionalValidation(c *gc.C) {
-	updateAttrs := map[string]interface{}{"logging-config": "juju=ERROR"}
-	configValidator1 := func(updateAttrs map[string]interface{}, removeAttrs []string, oldConfig *config.Config) error {
-		c.Assert(updateAttrs, gc.DeepEquals, map[string]interface{}{"logging-config": "juju=ERROR"})
-		if _, found := updateAttrs["logging-config"]; found {
-			return fmt.Errorf("cannot change logging-config")
-		}
-		return nil
-	}
-	removeAttrs := []string{"logging-config"}
-	configValidator2 := func(updateAttrs map[string]interface{}, removeAttrs []string, oldConfig *config.Config) error {
-		c.Assert(removeAttrs, gc.DeepEquals, []string{"logging-config"})
-		for _, i := range removeAttrs {
-			if i == "logging-config" {
-				return fmt.Errorf("cannot remove logging-config")
-			}
-		}
-		return nil
-	}
-	configValidator3 := func(updateAttrs map[string]interface{}, removeAttrs []string, oldConfig *config.Config) error {
-		return nil
-	}
-
-	err := s.State.UpdateModelConfig(updateAttrs, nil, configValidator1)
-	c.Assert(err, gc.ErrorMatches, "cannot change logging-config")
-	err = s.State.UpdateModelConfig(nil, removeAttrs, configValidator2)
-	c.Assert(err, gc.ErrorMatches, "cannot remove logging-config")
-	err = s.State.UpdateModelConfig(updateAttrs, nil, configValidator3)
-	c.Assert(err, jc.ErrorIsNil)
-}
-
 func (s *StateSuite) insertFakeModelDocs(c *gc.C, st *state.State) string {
 	// insert one doc for each multiEnvCollection
 	var ops []mgotxn.Op
@@ -3000,51 +2545,6 @@ func (s *StateSuite) TestRemoveImportingModelDocsImporting(c *gc.C) {
 
 type attrs map[string]interface{}
 
-func (s *StateSuite) TestWatchModelConfig(c *gc.C) {
-	w := s.State.WatchModelConfig()
-	defer statetesting.AssertStop(c, w)
-
-	// TODO(fwereade) just use a NotifyWatcher and NotifyWatcherC to test it.
-	assertNoChange := func() {
-		s.State.StartSync()
-		select {
-		case got := <-w.Changes():
-			c.Fatalf("got unexpected change: %#v", got)
-		case <-time.After(testing.ShortWait):
-		}
-	}
-	assertChange := func(change attrs) {
-		cfg, err := s.State.ModelConfig()
-		c.Assert(err, jc.ErrorIsNil)
-		cfg, err = cfg.Apply(change)
-		c.Assert(err, jc.ErrorIsNil)
-		if change != nil {
-			err = s.State.UpdateModelConfig(change, nil, nil)
-			c.Assert(err, jc.ErrorIsNil)
-		}
-		s.State.StartSync()
-		select {
-		case got, ok := <-w.Changes():
-			c.Assert(ok, jc.IsTrue)
-			c.Assert(got.AllAttrs(), gc.DeepEquals, cfg.AllAttrs())
-		case <-time.After(testing.LongWait):
-			c.Fatalf("did not get change: %#v", change)
-		}
-		assertNoChange()
-	}
-	assertChange(nil)
-	assertChange(attrs{"default-series": "another-series"})
-	assertChange(attrs{"fancy-new-key": "arbitrary-value"})
-}
-
-func (s *StateSuite) TestWatchModelConfigDiesOnStateClose(c *gc.C) {
-	testWatcherDiesWhenStateCloses(c, s.modelTag, func(c *gc.C, st *state.State) waiter {
-		w := st.WatchModelConfig()
-		<-w.Changes()
-		return w
-	})
-}
-
 func (s *StateSuite) TestWatchForModelConfigChanges(c *gc.C) {
 	cur := jujuversion.Current
 	err := statetesting.SetAgentVersion(s.State, cur)
@@ -3074,57 +2574,21 @@ func (s *StateSuite) TestWatchForModelConfigChanges(c *gc.C) {
 	wc.AssertNoChange()
 }
 
-func (s *StateSuite) TestWatchModelConfigCorruptConfig(c *gc.C) {
-	cfg, err := s.State.ModelConfig()
+func (s *StateSuite) TestWatchForModelConfigControllerChanges(c *gc.C) {
+	w := s.State.WatchForModelConfigChanges()
+	defer statetesting.AssertStop(c, w)
+
+	wc := statetesting.NewNotifyWatcherC(c, s.State, w)
+	// Initially we get one change notification
+	wc.AssertOneChange()
+
+	// Updating a controller setting value triggers the watcher.
+	controllerSettings, err := s.State.ReadSettings(state.ControllersC, "controllerSettings")
 	c.Assert(err, jc.ErrorIsNil)
-
-	// Corrupt the model configuration.
-	settings := s.Session.DB("juju").C("settings")
-	err = settings.UpdateId(state.DocID(s.State, "e"), bson.D{{"$unset", bson.D{{"settings.name", 1}}}})
+	controllerSettings.Set("apt-mirror", "http://mirror")
+	_, err = controllerSettings.Write()
 	c.Assert(err, jc.ErrorIsNil)
-
-	s.State.StartSync()
-
-	// Start watching the configuration.
-	watcher := s.State.WatchModelConfig()
-	defer watcher.Stop()
-	done := make(chan *config.Config)
-	go func() {
-		select {
-		case cfg, ok := <-watcher.Changes():
-			if !ok {
-				c.Errorf("watcher channel closed")
-			} else {
-				done <- cfg
-			}
-		case <-time.After(5 * time.Second):
-			c.Fatalf("no model configuration observed")
-		}
-	}()
-
-	s.State.StartSync()
-
-	// The invalid configuration must not have been generated.
-	select {
-	case <-done:
-		c.Fatalf("configuration returned too soon")
-	case <-time.After(testing.ShortWait):
-	}
-
-	// Fix the configuration.
-	err = settings.UpdateId(state.DocID(s.State, "e"), bson.D{{"$set", bson.D{{"settings.name", "foo"}}}})
-	c.Assert(err, jc.ErrorIsNil)
-	fixed := cfg.AllAttrs()
-	err = s.State.UpdateModelConfig(fixed, nil, nil)
-	c.Assert(err, jc.ErrorIsNil)
-
-	s.State.StartSync()
-	select {
-	case got := <-done:
-		c.Assert(got.AllAttrs(), gc.DeepEquals, fixed)
-	case <-time.After(5 * time.Second):
-		c.Fatalf("no model configuration observed")
-	}
+	wc.AssertOneChange()
 }
 
 func (s *StateSuite) TestAddAndGetEquivalence(c *gc.C) {
@@ -3148,7 +2612,7 @@ func (s *StateSuite) TestAddAndGetEquivalence(c *gc.C) {
 	c.Assert(charm1, jc.DeepEquals, charm2)
 
 	wordpress1 := s.AddTestingService(c, "wordpress", charm1)
-	wordpress2, err := s.State.Service("wordpress")
+	wordpress2, err := s.State.Application("wordpress")
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(wordpress1, jc.DeepEquals, wordpress2)
 
@@ -3278,7 +2742,7 @@ var findEntityTests = []findEntityTest{{
 }, {
 	tag: names.NewMachineTag("0"),
 }, {
-	tag: names.NewServiceTag("ser-vice2"),
+	tag: names.NewApplicationTag("ser-vice2"),
 }, {
 	tag: names.NewRelationTag("wordpress:db ser-vice2:server"),
 }, {
@@ -3298,13 +2762,13 @@ var findEntityTests = []findEntityTest{{
 }}
 
 var entityTypes = map[string]interface{}{
-	names.UserTagKind:     (*state.User)(nil),
-	names.ModelTagKind:    (*state.Model)(nil),
-	names.ServiceTagKind:  (*state.Service)(nil),
-	names.UnitTagKind:     (*state.Unit)(nil),
-	names.MachineTagKind:  (*state.Machine)(nil),
-	names.RelationTagKind: (*state.Relation)(nil),
-	names.ActionTagKind:   (state.Action)(nil),
+	names.UserTagKind:        (*state.User)(nil),
+	names.ModelTagKind:       (*state.Model)(nil),
+	names.ApplicationTagKind: (*state.Application)(nil),
+	names.UnitTagKind:        (*state.Unit)(nil),
+	names.MachineTagKind:     (*state.Machine)(nil),
+	names.RelationTagKind:    (*state.Relation)(nil),
+	names.ActionTagKind:      (state.Action)(nil),
 }
 
 func (s *StateSuite) TestFindEntity(c *gc.C) {
@@ -3374,11 +2838,11 @@ func (s *StateSuite) TestParseMachineTag(c *gc.C) {
 	c.Assert(id, gc.Equals, state.DocID(s.State, m.Id()))
 }
 
-func (s *StateSuite) TestParseServiceTag(c *gc.C) {
+func (s *StateSuite) TestParseApplicationTag(c *gc.C) {
 	svc := s.AddTestingService(c, "ser-vice2", s.AddTestingCharm(c, "dummy"))
 	coll, id, err := state.ConvertTagToCollectionNameAndId(s.State, svc.Tag())
 	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(coll, gc.Equals, "services")
+	c.Assert(coll, gc.Equals, "applications")
 	c.Assert(id, gc.Equals, state.DocID(s.State, svc.Name()))
 }
 
@@ -3561,7 +3025,7 @@ func (s *StateSuite) TestWatchMinUnits(c *gc.C) {
 	wc.AssertNoChange()
 
 	// Two actions: destroy a unit and increase minimum units for a service.
-	// A single change should occur, and the service name should appear only
+	// A single change should occur, and the application name should appear only
 	// one time in the change.
 	err = wordpress.SetMinUnits(5)
 	c.Assert(err, jc.ErrorIsNil)
@@ -3663,7 +3127,7 @@ func (s *StateSuite) TestSetEnvironAgentVersionErrors(c *gc.C) {
 	// Add a service and 4 units: one with a different version, one
 	// with an empty version, one with the current version, and one
 	// with the new version.
-	service, err := s.State.AddService(state.AddServiceArgs{Name: "wordpress", Owner: s.Owner.String(), Charm: s.AddTestingCharm(c, "wordpress")})
+	service, err := s.State.AddApplication(state.AddApplicationArgs{Name: "wordpress", Owner: s.Owner.String(), Charm: s.AddTestingCharm(c, "wordpress")})
 	c.Assert(err, jc.ErrorIsNil)
 	unit0, err := service.AddUnit()
 	c.Assert(err, jc.ErrorIsNil)
@@ -3713,7 +3177,7 @@ func (s *StateSuite) prepareAgentVersionTests(c *gc.C, st *state.State) (*config
 	// Add a machine and a unit with the current version.
 	machine, err := st.AddMachine("series", state.JobHostUnits)
 	c.Assert(err, jc.ErrorIsNil)
-	service, err := st.AddService(state.AddServiceArgs{Name: "wordpress", Owner: s.Owner.String(), Charm: s.AddTestingCharm(c, "wordpress")})
+	service, err := st.AddApplication(state.AddApplicationArgs{Name: "wordpress", Owner: s.Owner.String(), Charm: s.AddTestingCharm(c, "wordpress")})
 	c.Assert(err, jc.ErrorIsNil)
 	unit, err := service.AddUnit()
 	c.Assert(err, jc.ErrorIsNil)
@@ -3729,6 +3193,9 @@ func (s *StateSuite) prepareAgentVersionTests(c *gc.C, st *state.State) (*config
 func (s *StateSuite) changeEnviron(c *gc.C, envConfig *config.Config, name string, value interface{}) {
 	attrs := envConfig.AllAttrs()
 	attrs[name] = value
+	for _, attr := range config.ControllerOnlyConfigAttributes {
+		delete(attrs, attr)
+	}
 	c.Assert(s.State.UpdateModelConfig(attrs, nil, nil), gc.IsNil)
 }
 
@@ -3820,11 +3287,11 @@ func (s *StateSuite) TestSetEnvironAgentVersionExcessiveContention(c *gc.C) {
 	assertAgentVersion(c, s.State, currentVersion)
 }
 
-func (s *StateSuite) TestSetEnvironAgentFailsIfUpgrading(c *gc.C) {
+func (s *StateSuite) TestSetModelAgentFailsIfUpgrading(c *gc.C) {
 	// Get the agent-version set in the model.
-	envConfig, err := s.State.ModelConfig()
+	modelConfig, err := s.State.ModelConfig()
 	c.Assert(err, jc.ErrorIsNil)
-	agentVersion, ok := envConfig.AgentVersion()
+	agentVersion, ok := modelConfig.AgentVersion()
 	c.Assert(ok, jc.IsTrue)
 
 	machine, err := s.State.AddMachine("series", state.JobManageModel)
@@ -3911,18 +3378,6 @@ func (s *StateSuite) TestControllerInfo(c *gc.C) {
 
 	// TODO(rog) more testing here when we can actually add
 	// controllers.
-}
-
-func (s *StateSuite) TestControllerInfoWithPreMigrationDoc(c *gc.C) {
-	err := s.controllers.Update(
-		nil,
-		bson.D{{"$unset", bson.D{{"model-uuid", 1}}}},
-	)
-	c.Assert(err, jc.ErrorIsNil)
-
-	ids, err := s.State.ControllerInfo()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(ids.ModelTag, gc.Equals, s.modelTag)
 }
 
 func (s *StateSuite) TestReopenWithNoMachines(c *gc.C) {
@@ -4660,21 +4115,41 @@ type SetAdminMongoPasswordSuite struct {
 
 var _ = gc.Suite(&SetAdminMongoPasswordSuite{})
 
+func setAdminPassword(c *gc.C, inst *gitjujutesting.MgoInstance, owner names.UserTag, password string) {
+	session, err := inst.Dial()
+	c.Assert(err, jc.ErrorIsNil)
+	defer session.Close()
+	err = mongo.SetAdminMongoPassword(session, owner.String(), password)
+	c.Assert(err, jc.ErrorIsNil)
+}
+
 func (s *SetAdminMongoPasswordSuite) TestSetAdminMongoPassword(c *gc.C) {
 	inst := &gitjujutesting.MgoInstance{EnableAuth: true}
 	err := inst.Start(testing.Certs)
 	c.Assert(err, jc.ErrorIsNil)
 	defer inst.DestroyWithLog()
 
+	// We need to make an admin user before we initialize the state
+	// because in Mongo3.2 the localhost exception no longer has
+	// permission to create indexes.
+	// https://docs.mongodb.com/manual/core/security-users/#localhost-exception
 	owner := names.NewLocalUserTag("initialize-admin")
-	mongoInfo := &mongo.MongoInfo{
+	password := "huggies"
+	setAdminPassword(c, inst, owner, password)
+
+	noAuthInfo := &mongo.MongoInfo{
 		Info: mongo.Info{
 			Addrs:  []string{inst.Addr()},
 			CACert: testing.CACert,
 		},
 	}
+	authInfo := &mongo.MongoInfo{
+		Info:     noAuthInfo.Info,
+		Tag:      owner,
+		Password: password,
+	}
 	cfg := testing.ModelConfig(c)
-	st, err := state.Initialize(owner, mongoInfo, cfg, mongotest.DialOpts(), nil)
+	st, err := state.Initialize(owner, authInfo, "dummy", nil, cfg, mongotest.DialOpts(), nil)
 	c.Assert(err, jc.ErrorIsNil)
 	defer st.Close()
 
@@ -4688,20 +4163,20 @@ func (s *SetAdminMongoPasswordSuite) TestSetAdminMongoPassword(c *gc.C) {
 	err = st.MongoSession().DB("admin").Login("admin", "foo")
 	c.Assert(err, jc.ErrorIsNil)
 
-	err = tryOpenState(st.ModelTag(), mongoInfo)
+	err = tryOpenState(st.ModelTag(), noAuthInfo)
 	c.Check(errors.Cause(err), jc.Satisfies, errors.IsUnauthorized)
 	// note: collections are set up in arbitrary order, proximate cause of
 	// failure may differ.
 	c.Check(err, gc.ErrorMatches, `[^:]+: unauthorized mongo access: .*`)
 
-	mongoInfo.Password = "foo"
-	err = tryOpenState(st.ModelTag(), mongoInfo)
-	c.Assert(err, jc.ErrorIsNil)
+	passwordOnlyInfo := *noAuthInfo
+	passwordOnlyInfo.Password = "foo"
 
-	err = st.SetAdminMongoPassword("")
-	c.Assert(err, jc.ErrorIsNil)
-
-	mongoInfo.Password = ""
-	err = tryOpenState(st.ModelTag(), mongoInfo)
+	// Under mongo 3.2 it's not possible to create collections and
+	// indexes with no user - the localhost exception only permits
+	// creating users. There were some checks for unsetting the
+	// password and then creating the state in an older version of
+	// this test, but they couldn't be made to work with 3.2.
+	err = tryOpenState(st.ModelTag(), &passwordOnlyInfo)
 	c.Assert(err, jc.ErrorIsNil)
 }

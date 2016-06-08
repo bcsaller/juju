@@ -11,7 +11,7 @@ import (
 
 	"github.com/juju/cmd"
 	"github.com/juju/errors"
-	"github.com/juju/names"
+	"gopkg.in/juju/names.v2"
 	"launchpad.net/gnuflag"
 
 	"github.com/juju/juju/api/base"
@@ -46,8 +46,8 @@ The active model is denoted by an asterisk.
 
 Examples:
 
-    juju list-models
-    juju list-models --user bob
+    juju models
+    juju models --user bob
 
 See also: add-model
           share-model
@@ -72,9 +72,10 @@ type ModelsSysAPI interface {
 // Info implements Command.Info
 func (c *modelsCommand) Info() *cmd.Info {
 	return &cmd.Info{
-		Name:    "list-models",
+		Name:    "models",
 		Purpose: "Lists models a user can access on a controller.",
 		Doc:     listModelsDoc,
+		Aliases: []string{"list-models"},
 	}
 }
 
@@ -142,6 +143,7 @@ func (c *modelsCommand) Run(ctx *cmd.Context) error {
 		return errors.Annotate(err, "cannot get model details")
 	}
 
+	// TODO(perrito666) 2016-05-02 lp:1558657
 	now := time.Now()
 	modelInfo := make([]common.ModelInfo, 0, len(models))
 	for _, info := range paramsModelInfo {
@@ -240,7 +242,7 @@ func (c *modelsCommand) formatTabular(value interface{}) ([]byte, error) {
 		flags    = 0
 	)
 	tw := tabwriter.NewWriter(&out, minwidth, tabwidth, padding, padchar, flags)
-	fmt.Fprintf(tw, "NAME")
+	fmt.Fprintf(tw, "MODEL")
 	if c.listUUID {
 		fmt.Fprintf(tw, "\tMODEL UUID")
 	}

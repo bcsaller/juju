@@ -15,10 +15,10 @@ import (
 
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
-	"github.com/juju/names"
 	"github.com/juju/utils/os"
 	corecharm "gopkg.in/juju/charm.v6-unstable"
 	"gopkg.in/juju/charm.v6-unstable/hooks"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/worker"
@@ -79,7 +79,7 @@ var (
 )
 
 type stopper interface {
-	Stop()
+	Stop() error
 }
 
 // ManifoldConfig identifies the resource names upon which the collect manifold
@@ -156,11 +156,12 @@ func newCollect(config ManifoldConfig, context dependency.Context) (*collect, er
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
+
 	if len(validMetrics) > 0 && charmURL.Schema == "local" {
 		h := newHandler(handlerConfig{
+			charmdir:       charmdir,
+			agent:          agent,
 			unitTag:        unitTag,
-			charmURL:       charmURL,
-			validMetrics:   validMetrics,
 			metricsFactory: metricFactory,
 			runner:         runner,
 		})

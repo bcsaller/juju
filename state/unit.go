@@ -5,16 +5,17 @@ package state
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
-	"github.com/juju/names"
 	jujutxn "github.com/juju/txn"
 	"github.com/juju/utils"
 	"github.com/juju/utils/set"
 	"github.com/juju/version"
 	"gopkg.in/juju/charm.v6-unstable"
+	"gopkg.in/juju/names.v2"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 	"gopkg.in/mgo.v2/txn"
@@ -78,7 +79,7 @@ type unitDoc struct {
 	DocID                  string `bson:"_id"`
 	Name                   string `bson:"name"`
 	ModelUUID              string `bson:"model-uuid"`
-	Service                string
+	Application            string
 	Series                 string
 	CharmURL               *charm.URL
 	Principal              string
@@ -112,9 +113,9 @@ func newUnit(st *State, udoc *unitDoc) *Unit {
 	return unit
 }
 
-// Service returns the service.
-func (u *Unit) Service() (*Service, error) {
-	return u.st.Service(u.doc.Service)
+// Application returns the application.
+func (u *Unit) Application() (*Application, error) {
+	return u.st.Application(u.doc.Application)
 }
 
 // ConfigSettings returns the complete set of service charm config settings
@@ -125,7 +126,7 @@ func (u *Unit) ConfigSettings() (charm.Settings, error) {
 	if u.doc.CharmURL == nil {
 		return nil, fmt.Errorf("unit charm not set")
 	}
-	settings, err := readSettings(u.st, serviceSettingsKey(u.doc.Service, u.doc.CharmURL))
+	settings, err := readSettings(u.st, settingsC, applicationSettingsKey(u.doc.Application, u.doc.CharmURL))
 	if err != nil {
 		return nil, err
 	}
@@ -140,9 +141,9 @@ func (u *Unit) ConfigSettings() (charm.Settings, error) {
 	return result, nil
 }
 
-// ServiceName returns the service name.
-func (u *Unit) ServiceName() string {
-	return u.doc.Service
+// ApplicationName returns the application name.
+func (u *Unit) ApplicationName() string {
+	return u.doc.Application
 }
 
 // Series returns the deployed charm's series.
@@ -349,7 +350,7 @@ func (u *Unit) destroyOps() ([]txn.Op, error) {
 	// lose much time and (2) by maintaining this restriction, I can reduce
 	// the number of tests that have to change and defer that improvement to
 	// its own CL.
-	minUnitsOp := minUnitsTriggerOp(u.st, u.ServiceName())
+	minUnitsOp := minUnitsTriggerOp(u.st, u.ApplicationName())
 	cleanupOp := u.st.newCleanupOp(cleanupDyingUnit, u.doc.Name)
 	setDyingOp := txn.Op{
 		C:      unitsC,
@@ -399,7 +400,7 @@ func (u *Unit) destroyOps() ([]txn.Op, error) {
 
 // destroyHostOps returns all necessary operations to destroy the service unit's host machine,
 // or ensure that the conditions preventing its destruction remain stable through the transaction.
-func (u *Unit) destroyHostOps(s *Service) (ops []txn.Op, err error) {
+func (u *Unit) destroyHostOps(s *Application) (ops []txn.Op, err error) {
 	if s.doc.Subordinate {
 		return []txn.Op{{
 			C:      unitsC,
@@ -493,7 +494,7 @@ var errAlreadyRemoved = errors.New("entity has already been removed")
 // removeOps returns the operations necessary to remove the unit, assuming
 // the supplied asserts apply to the unit document.
 func (u *Unit) removeOps(asserts bson.D) ([]txn.Op, error) {
-	svc, err := u.st.Service(u.doc.Service)
+	svc, err := u.st.Application(u.doc.Application)
 	if errors.IsNotFound(err) {
 		// If the service has been removed, the unit must already have been.
 		return nil, errAlreadyRemoved
@@ -585,7 +586,7 @@ func (u *Unit) Remove() (err error) {
 	// EnsureDead does not require that it already be Dying, so this is the
 	// only point at which we can safely backstop lp:1233457 and mitigate
 	// the impact of unit agent bugs that leave relation scopes occupied).
-	relations, err := serviceRelations(u.st, u.doc.Service)
+	relations, err := applicationRelations(u.st, u.doc.Application)
 	if err != nil {
 		return err
 	}
@@ -662,7 +663,7 @@ type relationPredicate func(ru *RelationUnit) (bool, error)
 
 // relations implements RelationsJoined and RelationsInScope.
 func (u *Unit) relations(predicate relationPredicate) ([]*Relation, error) {
-	candidates, err := serviceRelations(u.st, u.doc.Service)
+	candidates, err := applicationRelations(u.st, u.doc.Application)
 	if err != nil {
 		return nil, err
 	}
@@ -772,9 +773,15 @@ func (u *Unit) AgentHistory() status.StatusHistoryGetter {
 // SetAgentStatus calls SetStatus for this unit's agent, this call
 // is equivalent to the former call to SetStatus when Agent and Unit
 // where not separate entities.
-func (u *Unit) SetAgentStatus(agentStatus status.Status, info string, data map[string]interface{}) error {
+func (u *Unit) SetAgentStatus(agentStatus status.StatusInfo) error {
 	agent := newUnitAgent(u.st, u.Tag(), u.Name())
-	return agent.SetStatus(agentStatus, info, data)
+	s := status.StatusInfo{
+		Status:  agentStatus.Status,
+		Message: agentStatus.Message,
+		Data:    agentStatus.Data,
+		Since:   agentStatus.Since,
+	}
+	return agent.SetStatus(s)
 }
 
 // AgentStatus calls Status for this unit's agent, this call
@@ -786,9 +793,15 @@ func (u *Unit) AgentStatus() (status.StatusInfo, error) {
 }
 
 // StatusHistory returns a slice of at most <size> StatusInfo items
+// or items as old as <date> or items newer than now - <delta> time
 // representing past statuses for this unit.
-func (u *Unit) StatusHistory(size int) ([]status.StatusInfo, error) {
-	return statusHistory(u.st, u.globalKey(), size)
+func (u *Unit) StatusHistory(filter status.StatusHistoryFilter) ([]status.StatusInfo, error) {
+	args := &statusHistoryArgs{
+		st:        u.st,
+		globalKey: u.globalKey(),
+		filter:    filter,
+	}
+	return statusHistory(args)
 }
 
 // Status returns the status of the unit.
@@ -819,16 +832,17 @@ func (u *Unit) Status() (status.StatusInfo, error) {
 // This method relies on globalKey instead of globalAgentKey since it is part of
 // the effort to separate Unit from UnitAgent. Now the SetStatus for UnitAgent is in
 // the UnitAgent struct.
-func (u *Unit) SetStatus(unitStatus status.Status, info string, data map[string]interface{}) error {
-	if !status.ValidWorkloadStatus(unitStatus) {
-		return errors.Errorf("cannot set invalid status %q", unitStatus)
+func (u *Unit) SetStatus(unitStatus status.StatusInfo) error {
+	if !status.ValidWorkloadStatus(unitStatus.Status) {
+		return errors.Errorf("cannot set invalid status %q", unitStatus.Status)
 	}
 	return setStatus(u.st, setStatusParams{
 		badge:     "unit",
 		globalKey: u.globalKey(),
-		status:    unitStatus,
-		message:   info,
-		rawData:   data,
+		status:    unitStatus.Status,
+		message:   unitStatus.Message,
+		rawData:   unitStatus.Data,
+		updated:   unitStatus.Since,
 	})
 }
 
@@ -1044,7 +1058,7 @@ func (u *Unit) SetCharmURL(curl *charm.URL) error {
 		}
 
 		// Add a reference to the service settings for the new charm.
-		incOp, err := settingsIncRefOp(u.st, u.doc.Service, curl, false)
+		incOp, err := settingsIncRefOp(u.st, u.doc.Application, curl, false)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
@@ -1061,7 +1075,7 @@ func (u *Unit) SetCharmURL(curl *charm.URL) error {
 			}}
 		if u.doc.CharmURL != nil {
 			// Drop the reference to the old charm.
-			decOps, err := settingsDecRefOps(u.st, u.doc.Service, u.doc.CharmURL)
+			decOps, err := settingsDecRefOps(u.st, u.doc.Application, u.doc.CharmURL)
 			if err != nil {
 				return nil, errors.Trace(err)
 			}
@@ -1078,7 +1092,8 @@ func (u *Unit) SetCharmURL(curl *charm.URL) error {
 
 // AgentPresence returns whether the respective remote agent is alive.
 func (u *Unit) AgentPresence() (bool, error) {
-	return u.st.pwatcher.Alive(u.globalAgentKey())
+	pwatcher := u.st.workers.PresenceWatcher()
+	return pwatcher.Alive(u.globalAgentKey())
 }
 
 // Tag returns a name identifying the unit.
@@ -1098,8 +1113,9 @@ func (u *Unit) UnitTag() names.UnitTag {
 func (u *Unit) WaitAgentPresence(timeout time.Duration) (err error) {
 	defer errors.DeferredAnnotatef(&err, "waiting for agent of unit %q", u)
 	ch := make(chan presence.Change)
-	u.st.pwatcher.Watch(u.globalAgentKey(), ch)
-	defer u.st.pwatcher.Unwatch(u.globalAgentKey(), ch)
+	pwatcher := u.st.workers.PresenceWatcher()
+	pwatcher.Watch(u.globalAgentKey(), ch)
+	defer pwatcher.Unwatch(u.globalAgentKey(), ch)
 	for i := 0; i < 2; i++ {
 		select {
 		case change := <-ch:
@@ -1109,8 +1125,8 @@ func (u *Unit) WaitAgentPresence(timeout time.Duration) (err error) {
 		case <-time.After(timeout):
 			// TODO(fwereade): 2016-03-17 lp:1558657
 			return fmt.Errorf("still not alive after timeout")
-		case <-u.st.pwatcher.Dead():
-			return u.st.pwatcher.Err()
+		case <-pwatcher.Dead():
+			return pwatcher.Err()
 		}
 	}
 	panic(fmt.Sprintf("presence reported dead status twice in a row for unit %q", u))
@@ -1119,7 +1135,7 @@ func (u *Unit) WaitAgentPresence(timeout time.Duration) (err error) {
 // SetAgentPresence signals that the agent for unit u is alive.
 // It returns the started pinger.
 func (u *Unit) SetAgentPresence() (*presence.Pinger, error) {
-	presenceCollection := u.st.getPresence()
+	presenceCollection := u.st.getPresenceCollection()
 	p := presence.NewPinger(presenceCollection, u.st.ModelTag(), u.globalAgentKey())
 	err := p.Start()
 	if err != nil {
@@ -1616,6 +1632,15 @@ func (u *Unit) AssignToNewMachine() (err error) {
 	return u.assignToNewMachine(template, "", containerType)
 }
 
+type byStorageInstance []StorageAttachment
+
+func (b byStorageInstance) Len() int      { return len(b) }
+func (b byStorageInstance) Swap(i, j int) { b[i], b[j] = b[j], b[i] }
+
+func (b byStorageInstance) Less(i, j int) bool {
+	return b[i].StorageInstance().String() < b[j].StorageInstance().String()
+}
+
 // machineStorageParams returns parameters for creating volumes/filesystems
 // and volume/filesystem attachments for a machine that the unit will be
 // assigned to.
@@ -1624,13 +1649,13 @@ func (u *Unit) machineStorageParams() (*machineStorageParams, error) {
 	if err != nil {
 		return nil, errors.Annotate(err, "getting storage attachments")
 	}
-	svc, err := u.Service()
+	svc, err := u.Application()
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 	curl, _ := svc.CharmURL()
 	if curl == nil {
-		return nil, errors.Errorf("no URL set for service %q", svc.Name())
+		return nil, errors.Errorf("no URL set for application %q", svc.Name())
 	}
 	ch, err := u.st.Charm(curl)
 	if err != nil {
@@ -1640,6 +1665,9 @@ func (u *Unit) machineStorageParams() (*machineStorageParams, error) {
 	if err != nil {
 		return nil, errors.Annotatef(err, "getting storage constraints")
 	}
+
+	// Sort storage attachments so the volume ids are consistent (for testing).
+	sort.Sort(byStorageInstance(storageAttachments))
 
 	chMeta := ch.Meta()
 
@@ -2088,13 +2116,13 @@ func (u *Unit) ActionSpecs() (ActionSpecsByName, error) {
 	curl, _ := u.CharmURL()
 	if curl == nil {
 		// If unit charm URL is not yet set, fall back to service
-		svc, err := u.Service()
+		svc, err := u.Application()
 		if err != nil {
 			return none, err
 		}
 		curl, _ = svc.CharmURL()
 		if curl == nil {
-			return none, errors.Errorf("no URL set for service %q", svc.Name())
+			return none, errors.Errorf("no URL set for application %q", svc.Name())
 		}
 	}
 	ch, err := u.st.Charm(curl)
@@ -2219,7 +2247,7 @@ func (u *Unit) ClearResolved() error {
 func (u *Unit) StorageConstraints() (map[string]StorageConstraints, error) {
 	// TODO(axw) eventually we should be able to override service
 	// storage constraints at the unit level.
-	return readStorageConstraints(u.st, serviceGlobalKey(u.doc.Service))
+	return readStorageConstraints(u.st, applicationGlobalKey(u.doc.Application))
 }
 
 type addUnitOpsArgs struct {

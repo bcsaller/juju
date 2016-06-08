@@ -12,7 +12,6 @@ import (
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/cmd/juju/controller"
-	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/jujuclient"
 	"github.com/juju/juju/jujuclient/jujuclienttesting"
 	"github.com/juju/juju/testing"
@@ -26,19 +25,21 @@ var _ = gc.Suite(&ShowControllerSuite{})
 
 func (s *ShowControllerSuite) TestShowOneControllerOneInStore(c *gc.C) {
 	s.controllersYaml = `controllers:
-  local.mallards:
+  mallards:
     uuid: this-is-another-uuid
     api-endpoints: [this-is-another-of-many-api-endpoints, this-is-one-more-of-many-api-endpoints]
     ca-cert: this-is-another-ca-cert
+    cloud: mallards
 `
 	s.createTestClientStore(c)
 
 	s.expectedOutput = `
-local.mallards:
+mallards:
   details:
     uuid: this-is-another-uuid
     api-endpoints: [this-is-another-of-many-api-endpoints, this-is-one-more-of-many-api-endpoints]
     ca-cert: this-is-another-ca-cert
+    cloud: mallards
   accounts:
     admin@local:
       user: admin@local
@@ -55,24 +56,26 @@ local.mallards:
   current-account: admin@local
 `[1:]
 
-	s.assertShowController(c, "local.mallards")
+	s.assertShowController(c, "mallards")
 }
 
 func (s *ShowControllerSuite) TestShowControllerWithPasswords(c *gc.C) {
 	s.controllersYaml = `controllers:
-  local.mallards:
+  mallards:
     uuid: this-is-another-uuid
     api-endpoints: [this-is-another-of-many-api-endpoints, this-is-one-more-of-many-api-endpoints]
     ca-cert: this-is-another-ca-cert
+    cloud: mallards
 `
 	s.createTestClientStore(c)
 
 	s.expectedOutput = `
-local.mallards:
+mallards:
   details:
     uuid: this-is-another-uuid
     api-endpoints: [this-is-another-of-many-api-endpoints, this-is-one-more-of-many-api-endpoints]
     ca-cert: this-is-another-ca-cert
+    cloud: mallards
   accounts:
     admin@local:
       user: admin@local
@@ -91,18 +94,20 @@ local.mallards:
   current-account: admin@local
 `[1:]
 
-	s.assertShowController(c, "local.mallards", "--show-passwords")
+	s.assertShowController(c, "mallards", "--show-passwords")
 }
 
 func (s *ShowControllerSuite) TestShowControllerWithBootstrapConfig(c *gc.C) {
 	s.controllersYaml = `controllers:
-  local.mallards:
+  mallards:
     uuid: this-is-another-uuid
     api-endpoints: [this-is-another-of-many-api-endpoints, this-is-one-more-of-many-api-endpoints]
     ca-cert: this-is-another-ca-cert
+    cloud: mallards
+    region: mallards1
 `
 	store := s.createTestClientStore(c)
-	store.BootstrapConfig["local.mallards"] = jujuclient.BootstrapConfig{
+	store.BootstrapConfig["mallards"] = jujuclient.BootstrapConfig{
 		Config: map[string]interface{}{
 			"name":  "admin",
 			"type":  "maas",
@@ -115,11 +120,13 @@ func (s *ShowControllerSuite) TestShowControllerWithBootstrapConfig(c *gc.C) {
 	}
 
 	s.expectedOutput = `
-local.mallards:
+mallards:
   details:
     uuid: this-is-another-uuid
     api-endpoints: [this-is-another-of-many-api-endpoints, this-is-one-more-of-many-api-endpoints]
     ca-cert: this-is-another-ca-cert
+    cloud: mallards
+    region: mallards1
   accounts:
     admin@local:
       user: admin@local
@@ -144,18 +151,20 @@ local.mallards:
     credential: my-credential
 `[1:]
 
-	s.assertShowController(c, "local.mallards")
+	s.assertShowController(c, "mallards")
 }
 
 func (s *ShowControllerSuite) TestShowOneControllerManyInStore(c *gc.C) {
 	s.createTestClientStore(c)
 
 	s.expectedOutput = `
-local.aws-test:
+aws-test:
   details:
     uuid: this-is-the-aws-test-uuid
     api-endpoints: [this-is-aws-test-of-many-api-endpoints]
     ca-cert: this-is-aws-test-ca-cert
+    cloud: aws
+    region: us-east-1
   accounts:
     admin@local:
       user: admin@local
@@ -164,17 +173,19 @@ local.aws-test:
           uuid: ghi
       current-model: admin
 `[1:]
-	s.assertShowController(c, "local.aws-test")
+	s.assertShowController(c, "aws-test")
 }
 
 func (s *ShowControllerSuite) TestShowSomeControllerMoreInStore(c *gc.C) {
 	s.createTestClientStore(c)
 	s.expectedOutput = `
-local.aws-test:
+aws-test:
   details:
     uuid: this-is-the-aws-test-uuid
     api-endpoints: [this-is-aws-test-of-many-api-endpoints]
     ca-cert: this-is-aws-test-ca-cert
+    cloud: aws
+    region: us-east-1
   accounts:
     admin@local:
       user: admin@local
@@ -182,35 +193,36 @@ local.aws-test:
         admin:
           uuid: ghi
       current-model: admin
-local.mark-test-prodstack:
+mark-test-prodstack:
   details:
     uuid: this-is-a-uuid
     api-endpoints: [this-is-one-of-many-api-endpoints]
     ca-cert: this-is-a-ca-cert
+    cloud: prodstack
   accounts:
     admin@local:
       user: admin@local
 `[1:]
 
-	s.assertShowController(c, "local.aws-test", "local.mark-test-prodstack")
+	s.assertShowController(c, "aws-test", "mark-test-prodstack")
 }
 
 func (s *ShowControllerSuite) TestShowControllerJsonOne(c *gc.C) {
 	s.createTestClientStore(c)
 
 	s.expectedOutput = `
-{"local.aws-test":{"details":{"uuid":"this-is-the-aws-test-uuid","api-endpoints":["this-is-aws-test-of-many-api-endpoints"],"ca-cert":"this-is-aws-test-ca-cert"},"accounts":{"admin@local":{"user":"admin@local","models":{"admin":{"uuid":"ghi"}},"current-model":"admin"}}}}
+{"aws-test":{"details":{"uuid":"this-is-the-aws-test-uuid","api-endpoints":["this-is-aws-test-of-many-api-endpoints"],"ca-cert":"this-is-aws-test-ca-cert","cloud":"aws","region":"us-east-1"},"accounts":{"admin@local":{"user":"admin@local","models":{"admin":{"uuid":"ghi"}},"current-model":"admin"}}}}
 `[1:]
 
-	s.assertShowController(c, "--format", "json", "local.aws-test")
+	s.assertShowController(c, "--format", "json", "aws-test")
 }
 
 func (s *ShowControllerSuite) TestShowControllerJsonMany(c *gc.C) {
 	s.createTestClientStore(c)
 	s.expectedOutput = `
-{"local.aws-test":{"details":{"uuid":"this-is-the-aws-test-uuid","api-endpoints":["this-is-aws-test-of-many-api-endpoints"],"ca-cert":"this-is-aws-test-ca-cert"},"accounts":{"admin@local":{"user":"admin@local","models":{"admin":{"uuid":"ghi"}},"current-model":"admin"}}},"local.mark-test-prodstack":{"details":{"uuid":"this-is-a-uuid","api-endpoints":["this-is-one-of-many-api-endpoints"],"ca-cert":"this-is-a-ca-cert"},"accounts":{"admin@local":{"user":"admin@local"}}}}
+{"aws-test":{"details":{"uuid":"this-is-the-aws-test-uuid","api-endpoints":["this-is-aws-test-of-many-api-endpoints"],"ca-cert":"this-is-aws-test-ca-cert","cloud":"aws","region":"us-east-1"},"accounts":{"admin@local":{"user":"admin@local","models":{"admin":{"uuid":"ghi"}},"current-model":"admin"}}},"mark-test-prodstack":{"details":{"uuid":"this-is-a-uuid","api-endpoints":["this-is-one-of-many-api-endpoints"],"ca-cert":"this-is-a-ca-cert","cloud":"prodstack"},"accounts":{"admin@local":{"user":"admin@local"}}}}
 `[1:]
-	s.assertShowController(c, "--format", "json", "local.aws-test", "local.mark-test-prodstack")
+	s.assertShowController(c, "--format", "json", "aws-test", "mark-test-prodstack")
 }
 
 func (s *ShowControllerSuite) TestShowControllerReadFromStoreErr(c *gc.C) {
@@ -227,20 +239,18 @@ func (s *ShowControllerSuite) TestShowControllerReadFromStoreErr(c *gc.C) {
 }
 
 func (s *ShowControllerSuite) TestShowControllerNoArgs(c *gc.C) {
-	s.createTestClientStore(c)
+	store := s.createTestClientStore(c)
 
 	s.expectedOutput = `
-{"local.aws-test":{"details":{"uuid":"this-is-the-aws-test-uuid","api-endpoints":["this-is-aws-test-of-many-api-endpoints"],"ca-cert":"this-is-aws-test-ca-cert"},"accounts":{"admin@local":{"user":"admin@local","models":{"admin":{"uuid":"ghi"}},"current-model":"admin"}}}}
+{"aws-test":{"details":{"uuid":"this-is-the-aws-test-uuid","api-endpoints":["this-is-aws-test-of-many-api-endpoints"],"ca-cert":"this-is-aws-test-ca-cert","cloud":"aws","region":"us-east-1"},"accounts":{"admin@local":{"user":"admin@local","models":{"admin":{"uuid":"ghi"}},"current-model":"admin"}}}}
 `[1:]
-	err := modelcmd.WriteCurrentController("local.aws-test")
-	c.Assert(err, jc.ErrorIsNil)
+	store.CurrentControllerName = "aws-test"
 	s.assertShowController(c, "--format", "json")
 }
 
 func (s *ShowControllerSuite) TestShowControllerNoArgsNoCurrent(c *gc.C) {
-	err := modelcmd.WriteCurrentController("")
-	c.Assert(err, jc.ErrorIsNil)
-
+	store := s.createTestClientStore(c)
+	store.CurrentControllerName = ""
 	s.expectedErr = regexp.QuoteMeta(`there is no active controller`)
 	s.assertShowControllerFailed(c)
 }

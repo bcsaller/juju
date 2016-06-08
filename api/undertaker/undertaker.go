@@ -5,7 +5,7 @@ package undertaker
 
 import (
 	"github.com/juju/errors"
-	"github.com/juju/names"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/apiserver/params"
@@ -58,7 +58,7 @@ func (c *Client) RemoveModel() error {
 func (c *Client) SetStatus(status status.Status, message string, data map[string]interface{}) error {
 	args := params.SetStatus{
 		Entities: []params.EntityStatusArgs{
-			{c.modelTag.String(), status, message, data},
+			{c.modelTag.String(), status.String(), message, data},
 		},
 	}
 	var results params.ErrorResults

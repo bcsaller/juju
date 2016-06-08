@@ -18,11 +18,11 @@ import (
 
 	"github.com/juju/cmd"
 	"github.com/juju/errors"
-	"github.com/juju/names"
 	"github.com/juju/utils"
 	"github.com/juju/utils/set"
 	"golang.org/x/crypto/nacl/secretbox"
 	"golang.org/x/crypto/ssh/terminal"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/api"
 	"github.com/juju/juju/apiserver/params"
@@ -185,7 +185,7 @@ func (c *registerCommand) Run(ctx *cmd.Context) error {
 	if err := c.refreshModels(c.store, registrationParams.controllerName, accountName); err != nil {
 		return errors.Trace(err)
 	}
-	if err := modelcmd.WriteCurrentController(registrationParams.controllerName); err != nil {
+	if err := c.store.SetCurrentController(registrationParams.controllerName); err != nil {
 		return errors.Trace(err)
 	}
 

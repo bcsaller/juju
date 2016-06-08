@@ -88,6 +88,8 @@ var minimalConfigAttrs = testing.Attrs{
 	"controller-uuid": testing.ModelTag.Id(),
 }
 
+var modelNameErr = "%q is not a valid name: model names may only contain lowercase letters, digits and hyphens"
+
 var configTests = []configTest{
 	{
 		about:       "The minimum good configuration",
@@ -259,7 +261,7 @@ var configTests = []configTest{
 			"ca-cert":        caCert,
 			"ca-private-key": caKey2,
 		}),
-		err: "bad CA certificate/key in configuration: crypto/tls: private key does not match public key",
+		err: "bad CA certificate/key in configuration: .*tls: private key does not match public key",
 	}, {
 		about:       "Invalid CA cert",
 		useDefaults: config.UseDefaults,
@@ -274,7 +276,7 @@ var configTests = []configTest{
 			"ca-cert":        caCert,
 			"ca-private-key": invalidCAKey,
 		}),
-		err: "bad CA certificate/key in configuration: crypto/tls:.*",
+		err: "bad CA certificate/key in configuration: .*tls:.*",
 	}, {
 		about:       "CA cert specified as non-existent file",
 		useDefaults: config.UseDefaults,
@@ -407,26 +409,6 @@ var configTests = []configTest{
 			"block-all-changest": false,
 		}),
 	}, {
-		about:       "Invalid prefer-ipv6 flag",
-		useDefaults: config.UseDefaults,
-		attrs: minimalConfigAttrs.Merge(testing.Attrs{
-			"authorized-keys": testing.FakeAuthKeys,
-			"prefer-ipv6":     "invalid",
-		}),
-		err: `prefer-ipv6: expected bool, got string\("invalid"\)`,
-	}, {
-		about:       "prefer-ipv6 off",
-		useDefaults: config.UseDefaults,
-		attrs: minimalConfigAttrs.Merge(testing.Attrs{
-			"prefer-ipv6": false,
-		}),
-	}, {
-		about:       "prefer-ipv6 on",
-		useDefaults: config.UseDefaults,
-		attrs: minimalConfigAttrs.Merge(testing.Attrs{
-			"prefer-ipv6": true,
-		}),
-	}, {
 		about:       "Invalid agent version",
 		useDefaults: config.UseDefaults,
 		attrs: minimalConfigAttrs.Merge(testing.Attrs{
@@ -457,14 +439,28 @@ var configTests = []configTest{
 		attrs: minimalConfigAttrs.Merge(testing.Attrs{
 			"name": "foo/bar",
 		}),
-		err: "model name contains unsafe characters",
+		err: fmt.Sprintf(modelNameErr, "name"),
 	}, {
 		about:       "Bad name, no backslash",
 		useDefaults: config.UseDefaults,
 		attrs: minimalConfigAttrs.Merge(testing.Attrs{
 			"name": "foo\\bar",
 		}),
-		err: "model name contains unsafe characters",
+		err: fmt.Sprintf(modelNameErr, "name"),
+	}, {
+		about:       "Bad name, no space",
+		useDefaults: config.UseDefaults,
+		attrs: minimalConfigAttrs.Merge(testing.Attrs{
+			"name": "foo bar",
+		}),
+		err: fmt.Sprintf(modelNameErr, "name"),
+	}, {
+		about:       "Bad name, no capital",
+		useDefaults: config.UseDefaults,
+		attrs: minimalConfigAttrs.Merge(testing.Attrs{
+			"name": "fooBar",
+		}),
+		err: fmt.Sprintf(modelNameErr, "name"),
 	}, {
 		about:       "Empty name",
 		useDefaults: config.UseDefaults,
@@ -889,7 +885,7 @@ var noCertFilesTests = []configTest{
 			"authorized-keys": testing.FakeAuthKeys,
 			"ca-private-key":  caKey,
 		},
-		err: "bad CA certificate/key in configuration: crypto/tls:.*",
+		err: "bad CA certificate/key in configuration: .*tls:.*",
 	},
 }
 
@@ -1290,7 +1286,6 @@ func (s *ConfigSuite) TestConfigAttrs(c *gc.C) {
 	attrs["image-stream"] = ""
 	attrs["proxy-ssh"] = false
 	attrs["lxc-clone-aufs"] = false
-	attrs["prefer-ipv6"] = false
 	attrs["set-numa-control-policy"] = false
 	attrs["allow-lxc-loop-mounts"] = false
 
@@ -1402,11 +1397,6 @@ var validationTests = []validationTest{{
 	old:   testing.Attrs{"lxc-default-mtu": 9000},
 	new:   testing.Attrs{"lxc-default-mtu": 42},
 	err:   `cannot change lxc-default-mtu from 9000 to 42`,
-}, {
-	about: "Cannot change prefer-ipv6",
-	old:   testing.Attrs{"prefer-ipv6": false},
-	new:   testing.Attrs{"prefer-ipv6": true},
-	err:   `cannot change prefer-ipv6 from false to true`,
 }, {
 	about: "Cannot change uuid",
 	old:   testing.Attrs{"uuid": "90168e4c-2f10-4e9c-83c2-1fb55a58e5a9"},

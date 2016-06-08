@@ -4,11 +4,13 @@
 package commands
 
 import (
+	"time"
+
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
 
+	"github.com/juju/juju/cmd/juju/application"
 	"github.com/juju/juju/cmd/juju/common"
-	"github.com/juju/juju/cmd/juju/service"
 	jujutesting "github.com/juju/juju/juju/testing"
 	"github.com/juju/juju/state"
 	"github.com/juju/juju/status"
@@ -36,7 +38,7 @@ func runResolved(c *gc.C, args []string) error {
 }
 
 func runDeploy(c *gc.C, args ...string) error {
-	_, err := testing.RunCommand(c, service.NewDeployCommand(), args...)
+	_, err := testing.RunCommand(c, application.NewDeployCommand(), args...)
 	return err
 }
 
@@ -93,10 +95,17 @@ func (s *ResolvedSuite) TestResolved(c *gc.C) {
 	err := runDeploy(c, "-n", "5", ch, "dummy", "--series", "quantal")
 	c.Assert(err, jc.ErrorIsNil)
 
+	// lp:1558657
+	now := time.Now()
 	for _, name := range []string{"dummy/2", "dummy/3", "dummy/4"} {
 		u, err := s.State.Unit(name)
 		c.Assert(err, jc.ErrorIsNil)
-		err = u.SetAgentStatus(status.StatusError, "lol borken", nil)
+		sInfo := status.StatusInfo{
+			Status:  status.StatusError,
+			Message: "lol borken",
+			Since:   &now,
+		}
+		err = u.SetAgentStatus(sInfo)
 		c.Assert(err, jc.ErrorIsNil)
 	}
 
@@ -121,10 +130,17 @@ func (s *ResolvedSuite) TestBlockResolved(c *gc.C) {
 	err := runDeploy(c, "-n", "5", ch, "dummy", "--series", "quantal")
 	c.Assert(err, jc.ErrorIsNil)
 
+	// lp:1558657
+	now := time.Now()
 	for _, name := range []string{"dummy/2", "dummy/3", "dummy/4"} {
 		u, err := s.State.Unit(name)
 		c.Assert(err, jc.ErrorIsNil)
-		err = u.SetAgentStatus(status.StatusError, "lol borken", nil)
+		sInfo := status.StatusInfo{
+			Status:  status.StatusError,
+			Message: "lol borken",
+			Since:   &now,
+		}
+		err = u.SetAgentStatus(sInfo)
 		c.Assert(err, jc.ErrorIsNil)
 	}
 

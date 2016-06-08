@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/juju/errors"
-	"github.com/juju/names"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/apiserver/undertaker"
 	"github.com/juju/juju/environs/config"
@@ -82,7 +82,7 @@ func (m *mockState) AllMachines() ([]undertaker.Machine, error) {
 	return m.machines, nil
 }
 
-func (m *mockState) AllServices() ([]undertaker.Service, error) {
+func (m *mockState) AllApplications() ([]undertaker.Service, error) {
 	return m.services, nil
 }
 
@@ -146,10 +146,10 @@ func (m *mockModel) Destroy() error {
 	return nil
 }
 
-func (m *mockModel) SetStatus(status status.Status, info string, data map[string]interface{}) error {
-	m.status = status
-	m.statusInfo = info
-	m.statusData = data
+func (m *mockModel) SetStatus(sInfo status.StatusInfo) error {
+	m.status = sInfo.Status
+	m.statusInfo = sInfo.Message
+	m.statusData = sInfo.Data
 	return nil
 }
 

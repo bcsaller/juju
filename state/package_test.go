@@ -4,16 +4,18 @@
 package state_test
 
 import (
-	stdtesting "testing"
-
-	"github.com/juju/testing"
+	"testing"
 
 	coretesting "github.com/juju/juju/testing"
+	"github.com/juju/utils/os"
 )
 
-func TestPackage(t *stdtesting.T) {
-	if testing.RaceEnabled {
-		t.Skip("skipping package under -race, see LP 1519095")
+func TestPackage(t *testing.T) {
+	// At this stage, Juju only supports running the apiservers and database
+	// on Ubuntu. If we end up officially supporting CentOS, then we should
+	// make sure we run the tests there.
+	if os.HostOS() != os.Ubuntu {
+		t.Skipf("skipping tests on %v", os.HostOS())
 	}
 	coretesting.MgoTestPackage(t)
 }

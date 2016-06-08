@@ -33,7 +33,7 @@ Examples:
 See also: 
     add-user
     register
-    list-users`[1:]
+    users`[1:]
 
 // UserInfoAPI defines the API methods that the info command uses.
 type UserInfoAPI interface {
@@ -41,7 +41,7 @@ type UserInfoAPI interface {
 	Close() error
 }
 
-// infoCommandBase is a common base for 'juju show-user' and 'juju list-user'.
+// infoCommandBase is a common base for 'juju show-user' and 'juju users'.
 type infoCommandBase struct {
 	modelcmd.ControllerCommandBase
 	api       UserInfoAPI
@@ -134,6 +134,7 @@ func (c *infoCommand) Run(ctx *cmd.Context) (err error) {
 
 func (c *infoCommandBase) apiUsersToUserInfoSlice(users []params.UserInfo) []UserInfo {
 	var output []UserInfo
+	// TODO(perrito666) 2016-05-02 lp:1558657
 	var now = time.Now()
 	for _, info := range users {
 		outInfo := UserInfo{

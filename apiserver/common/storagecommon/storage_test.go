@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 
 	"github.com/juju/errors"
-	"github.com/juju/names"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/apiserver/common/storagecommon"
 	apiservertesting "github.com/juju/juju/apiserver/testing"
@@ -174,11 +174,8 @@ func (s *watchStorageAttachmentSuite) SetUpTest(c *gc.C) {
 	}
 	s.volume = &fakeVolume{tag: names.NewVolumeTag("0")}
 	s.volumeAttachmentWatcher = apiservertesting.NewFakeNotifyWatcher()
-	s.volumeAttachmentWatcher.C <- struct{}{}
 	s.blockDevicesWatcher = apiservertesting.NewFakeNotifyWatcher()
-	s.blockDevicesWatcher.C <- struct{}{}
 	s.storageAttachmentWatcher = apiservertesting.NewFakeNotifyWatcher()
-	s.storageAttachmentWatcher.C <- struct{}{}
 	s.st = &fakeStorage{
 		storageInstance: func(tag names.StorageTag) (state.StorageInstance, error) {
 			return s.storageInstance, nil

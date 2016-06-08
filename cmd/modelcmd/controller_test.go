@@ -6,7 +6,6 @@ package modelcmd_test
 import (
 	"github.com/juju/cmd"
 	"github.com/juju/cmd/cmdtesting"
-	"github.com/juju/errors"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
 
@@ -24,14 +23,12 @@ var _ = gc.Suite(&ControllerCommandSuite{})
 
 func (s *ControllerCommandSuite) TestControllerCommandNoneSpecified(c *gc.C) {
 	_, err := initTestControllerCommand(c, nil)
-	c.Assert(err, gc.ErrorMatches, "no controller specified(.|\n)*")
+	c.Assert(err, gc.ErrorMatches, "no controller(.|\n)*")
 }
 
-func (s *ControllerCommandSuite) TestControllerCommandInitSystemFile(c *gc.C) {
-	// If there is a current-controller file, use that.
-	err := modelcmd.WriteCurrentController("foo")
-	c.Assert(err, jc.ErrorIsNil)
+func (s *ControllerCommandSuite) TestControllerCommandInitCurrentController(c *gc.C) {
 	store := jujuclienttesting.NewMemStore()
+	store.CurrentControllerName = "foo"
 	store.Accounts["foo"] = &jujuclient.ControllerAccounts{
 		CurrentAccount: "bar@baz",
 	}
@@ -42,9 +39,8 @@ func (s *ControllerCommandSuite) TestControllerCommandInitSystemFile(c *gc.C) {
 func (s *ControllerCommandSuite) TestControllerCommandInitExplicit(c *gc.C) {
 	// Take controller name from command line arg, and it trumps the current-
 	// controller file.
-	err := modelcmd.WriteCurrentController("foo")
-	c.Assert(err, jc.ErrorIsNil)
 	store := jujuclienttesting.NewMemStore()
+	store.CurrentControllerName = "foo"
 	store.Accounts["explicit"] = &jujuclient.ControllerAccounts{
 		CurrentAccount: "bar@baz",
 	}
@@ -83,53 +79,4 @@ func testEnsureControllerName(c *gc.C, store jujuclient.ClientStore, expect stri
 	cmd, err := initTestControllerCommand(c, store, args...)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(cmd.ControllerName(), gc.Equals, expect)
-}
-
-type ControllerSuite struct {
-	store jujuclient.ControllerStore
-}
-
-var _ = gc.Suite(&ControllerSuite{})
-
-func (s *ControllerSuite) SetUpTest(c *gc.C) {
-	controller := jujuclient.ControllerDetails{ControllerUUID: "controller-uuid"}
-	anothercontroller := jujuclient.ControllerDetails{ControllerUUID: "another-uuid"}
-	s.store = &jujuclienttesting.MemStore{
-		Controllers: map[string]jujuclient.ControllerDetails{
-			"local.controller":        controller,
-			"anothercontroller":       anothercontroller,
-			"local.anothercontroller": jujuclient.ControllerDetails{},
-		},
-	}
-}
-
-func (s *ControllerSuite) TestLocalNameFound(c *gc.C) {
-	name, err := modelcmd.ResolveControllerName(s.store, "local.controller")
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(name, gc.DeepEquals, "local.controller")
-}
-
-func (s *ControllerSuite) TestLocalNameFallback(c *gc.C) {
-	name, err := modelcmd.ResolveControllerName(s.store, "controller")
-	c.Assert(name, gc.DeepEquals, "local.controller")
-	c.Assert(err, jc.ErrorIsNil)
-}
-
-func (s *ControllerSuite) TestNonLocalController(c *gc.C) {
-	name, err := modelcmd.ResolveControllerName(s.store, "anothercontroller")
-	c.Assert(name, gc.DeepEquals, "anothercontroller")
-	c.Assert(err, jc.ErrorIsNil)
-}
-
-func (s *ControllerSuite) TestOnlyLocalController(c *gc.C) {
-	name, err := modelcmd.ResolveControllerName(s.store, "local.anothercontroller")
-	c.Assert(name, gc.DeepEquals, "local.anothercontroller")
-	c.Assert(err, jc.ErrorIsNil)
-}
-
-func (s *ControllerSuite) TestNotFound(c *gc.C) {
-	_, err := modelcmd.ResolveControllerName(s.store, "foo")
-	c.Assert(err, jc.Satisfies, errors.IsNotFound)
-	// We should report on the passed in controller name.
-	c.Assert(err, gc.ErrorMatches, ".* foo .*")
 }

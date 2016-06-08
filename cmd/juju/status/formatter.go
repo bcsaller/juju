@@ -35,9 +35,9 @@ func (sf *statusFormatter) format() formattedStatus {
 		return formattedStatus{}
 	}
 	out := formattedStatus{
-		Model:    sf.status.ModelName,
-		Machines: make(map[string]machineStatus),
-		Services: make(map[string]serviceStatus),
+		Model:        sf.status.ModelName,
+		Machines:     make(map[string]machineStatus),
+		Applications: make(map[string]applicationStatus),
 	}
 	if sf.status.AvailableVersion != "" {
 		out.ModelStatus = &modelStatus{
@@ -48,8 +48,8 @@ func (sf *statusFormatter) format() formattedStatus {
 	for k, m := range sf.status.Machines {
 		out.Machines[k] = sf.formatMachine(m)
 	}
-	for sn, s := range sf.status.Services {
-		out.Services[sn] = sf.formatService(sn, s)
+	for sn, s := range sf.status.Applications {
+		out.Applications[sn] = sf.formatService(sn, s)
 	}
 	return out
 }
@@ -104,8 +104,8 @@ func (sf *statusFormatter) formatMachine(machine params.MachineStatus) machineSt
 	return out
 }
 
-func (sf *statusFormatter) formatService(name string, service params.ServiceStatus) serviceStatus {
-	out := serviceStatus{
+func (sf *statusFormatter) formatService(name string, service params.ApplicationStatus) applicationStatus {
+	out := applicationStatus{
 		Err:           service.Err,
 		Charm:         service.Charm,
 		Exposed:       service.Exposed,
@@ -127,10 +127,11 @@ func (sf *statusFormatter) formatService(name string, service params.ServiceStat
 	return out
 }
 
-func (sf *statusFormatter) getServiceStatusInfo(service params.ServiceStatus) statusInfoContents {
+func (sf *statusFormatter) getServiceStatusInfo(service params.ApplicationStatus) statusInfoContents {
+	// TODO(perrito66) add status validation.
 	info := statusInfoContents{
 		Err:     service.Status.Err,
-		Current: service.Status.Status,
+		Current: status.Status(service.Status.Status),
 		Message: service.Status.Info,
 		Version: service.Status.Version,
 	}
@@ -180,9 +181,10 @@ func (sf *statusFormatter) formatUnit(info unitFormatInfo) unitStatus {
 }
 
 func (sf *statusFormatter) getStatusInfoContents(inst params.DetailedStatus) statusInfoContents {
+	// TODO(perrito66) add status validation.
 	info := statusInfoContents{
 		Err:     inst.Err,
-		Current: inst.Status,
+		Current: status.Status(inst.Status),
 		Message: inst.Info,
 		Version: inst.Version,
 		Life:    inst.Life,
@@ -194,9 +196,10 @@ func (sf *statusFormatter) getStatusInfoContents(inst params.DetailedStatus) sta
 }
 
 func (sf *statusFormatter) getWorkloadStatusInfo(unit params.UnitStatus) statusInfoContents {
+	// TODO(perrito66) add status validation.
 	info := statusInfoContents{
 		Err:     unit.WorkloadStatus.Err,
-		Current: unit.WorkloadStatus.Status,
+		Current: status.Status(unit.WorkloadStatus.Status),
 		Message: unit.WorkloadStatus.Info,
 		Version: unit.WorkloadStatus.Version,
 	}
@@ -207,9 +210,10 @@ func (sf *statusFormatter) getWorkloadStatusInfo(unit params.UnitStatus) statusI
 }
 
 func (sf *statusFormatter) getAgentStatusInfo(unit params.UnitStatus) statusInfoContents {
+	// TODO(perrito66) add status validation.
 	info := statusInfoContents{
 		Err:     unit.AgentStatus.Err,
-		Current: unit.AgentStatus.Status,
+		Current: status.Status(unit.AgentStatus.Status),
 		Message: unit.AgentStatus.Info,
 		Version: unit.AgentStatus.Version,
 	}
@@ -220,7 +224,8 @@ func (sf *statusFormatter) getAgentStatusInfo(unit params.UnitStatus) statusInfo
 }
 
 func (sf *statusFormatter) updateUnitStatusInfo(unit *params.UnitStatus, serviceName string) {
-	if unit.WorkloadStatus.Status == status.StatusError {
+	// TODO(perrito66) add status validation.
+	if status.Status(unit.WorkloadStatus.Status) == status.StatusError {
 		if relation, ok := sf.relations[getRelationIdFromData(unit)]; ok {
 			// Append the details of the other endpoint on to the status info string.
 			if ep, ok := findOtherEndpoint(relation.Endpoints, serviceName); ok {
@@ -258,11 +263,11 @@ func getRelationIdFromData(unit *params.UnitStatus) int {
 }
 
 // findOtherEndpoint searches the provided endpoints for an endpoint
-// that *doesn't* match serviceName. The returned bool indicates if
+// that *doesn't* match applicationName. The returned bool indicates if
 // such an endpoint was found.
 func findOtherEndpoint(endpoints []params.EndpointStatus, serviceName string) (params.EndpointStatus, bool) {
 	for _, endpoint := range endpoints {
-		if endpoint.ServiceName != serviceName {
+		if endpoint.ApplicationName != serviceName {
 			return endpoint, true
 		}
 	}

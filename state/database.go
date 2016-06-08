@@ -7,8 +7,8 @@ import (
 	"fmt"
 
 	"github.com/juju/errors"
-	"github.com/juju/names"
 	jujutxn "github.com/juju/txn"
+	"gopkg.in/juju/names.v2"
 	"gopkg.in/mgo.v2"
 
 	"github.com/juju/juju/mongo"
@@ -171,7 +171,7 @@ func (db *database) CopySession() (Database, SessionCloser) {
 func (db *database) GetCollection(name string) (collection mongo.Collection, closer SessionCloser) {
 	info, found := db.schema[name]
 	if !found {
-		logger.Warningf("using unknown collection %q", name)
+		logger.Errorf("using unknown collection %q", name)
 	}
 
 	// Copy session if necessary.

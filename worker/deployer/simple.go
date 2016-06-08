@@ -10,11 +10,11 @@ import (
 	"regexp"
 
 	"github.com/juju/errors"
-	"github.com/juju/names"
 	"github.com/juju/utils/arch"
 	"github.com/juju/utils/series"
 	"github.com/juju/utils/shell"
 	"github.com/juju/version"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/agent/tools"
@@ -286,7 +286,7 @@ func (ctx *SimpleContext) service(unitName string, renderer shell.Renderer) (dep
 func removeOnErr(err *error, path string) {
 	if *err != nil {
 		if err := os.RemoveAll(path); err != nil {
-			logger.Warningf("installer: cannot remove %q: %v", path, err)
+			logger.Errorf("installer: cannot remove %q: %v", path, err)
 		}
 	}
 }

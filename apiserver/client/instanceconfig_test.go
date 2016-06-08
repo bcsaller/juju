@@ -39,7 +39,7 @@ func (s *machineConfigSuite) TestMachineConfig(c *gc.C) {
 		InstanceId: instance.Id("1234"),
 		Nonce:      "foo",
 		HardwareCharacteristics: hc,
-		Addrs: params.FromNetworkAddresses(addrs),
+		Addrs: params.FromNetworkAddresses(addrs...),
 	}
 	machines, err := s.APIState.Client().AddMachines([]params.AddMachineParams{apiParams})
 	c.Assert(err, jc.ErrorIsNil)
@@ -51,17 +51,14 @@ func (s *machineConfigSuite) TestMachineConfig(c *gc.C) {
 
 	envConfig, err := s.State.ModelConfig()
 	c.Assert(err, jc.ErrorIsNil)
-	mongoAddrs := s.State.MongoConnectionInfo().Addrs
 	apiAddrs := []string{net.JoinHostPort("localhost", strconv.Itoa(envConfig.APIPort()))}
 
-	c.Check(instanceConfig.MongoInfo.Addrs, gc.DeepEquals, mongoAddrs)
 	c.Check(instanceConfig.APIInfo.Addrs, gc.DeepEquals, apiAddrs)
 	toolsURL := fmt.Sprintf("https://%s/model/%s/tools/%s",
 		apiAddrs[0], jujutesting.ModelTag.Id(), instanceConfig.AgentVersion())
 	c.Assert(instanceConfig.ToolsList().URLs(), jc.DeepEquals, map[version.Binary][]string{
 		instanceConfig.AgentVersion(): []string{toolsURL},
 	})
-	//c.Assert(instanceConfig.ToolsList()[0].URL, gc.Equals, toolsURL)
 	c.Assert(instanceConfig.AgentEnvironment[agent.AllowsSecureConnection], gc.Equals, "true")
 }
 
@@ -115,7 +112,7 @@ func (s *machineConfigSuite) TestMachineConfigNoTools(c *gc.C) {
 		InstanceId: instance.Id("1234"),
 		Nonce:      "foo",
 		HardwareCharacteristics: hc,
-		Addrs: params.FromNetworkAddresses(addrs),
+		Addrs: params.FromNetworkAddresses(addrs...),
 	}
 	machines, err := s.APIState.Client().AddMachines([]params.AddMachineParams{apiParams})
 	c.Assert(err, jc.ErrorIsNil)

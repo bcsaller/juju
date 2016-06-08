@@ -8,16 +8,16 @@ import (
 	"time"
 
 	"github.com/juju/loggo"
-	"github.com/juju/names"
 	jujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/juju/names.v2"
 	"gopkg.in/mgo.v2/bson"
 
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/api"
 	agentcmd "github.com/juju/juju/cmd/jujud/agent"
-	agenttesting "github.com/juju/juju/cmd/jujud/agent/testing"
+	"github.com/juju/juju/cmd/jujud/agent/agenttest"
 	"github.com/juju/juju/state"
 	coretesting "github.com/juju/juju/testing"
 	"github.com/juju/juju/testing/factory"
@@ -30,7 +30,7 @@ import (
 // tests with more detailed testing of the individual components
 // being done in unit tests.
 type dblogSuite struct {
-	agenttesting.AgentSuite
+	agenttest.AgentSuite
 }
 
 func (s *dblogSuite) SetUpTest(c *gc.C) {
@@ -112,7 +112,7 @@ func (s *dblogSuite) waitForLogs(c *gc.C, entityTag names.Tag) bool {
 // debugLogDbSuite tests that the debuglog API works when logs are
 // being read from the database.
 type debugLogDbSuite struct {
-	agenttesting.AgentSuite
+	agenttest.AgentSuite
 }
 
 var _ = gc.Suite(&debugLogDbSuite{})

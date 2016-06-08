@@ -4,6 +4,8 @@
 package state
 
 import (
+	"time"
+
 	"github.com/juju/errors"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
@@ -79,14 +81,14 @@ func assertMachineAddresses(c *gc.C, machine *Machine, publicAddress, privateAdd
 	if publicAddress != "" {
 		c.Assert(err, jc.ErrorIsNil)
 	} else {
-		c.Assert(err, jc.Satisfies, network.IsNoAddress)
+		c.Assert(err, jc.Satisfies, network.IsNoAddressError)
 	}
 	c.Assert(addr.Value, gc.Equals, publicAddress)
 	privAddr, err := machine.PrivateAddress()
 	if privateAddress != "" {
 		c.Assert(err, jc.ErrorIsNil)
 	} else {
-		c.Assert(err, jc.Satisfies, network.IsNoAddress)
+		c.Assert(err, jc.Satisfies, network.IsNoAddressError)
 	}
 	c.Assert(privAddr.Value, gc.Equals, privateAddress)
 }
@@ -271,7 +273,13 @@ func (s *upgradesSuite) TestAddFilesystemStatusDoesNotOverwrite(c *gc.C) {
 	_, _, filesystem, cleanup := setupMachineBoundStorageTests(c, s.state)
 	defer cleanup()
 
-	err := filesystem.SetStatus(status.StatusDestroying, "", nil)
+	now := time.Now()
+	sInfo := status.StatusInfo{
+		Status:  status.StatusDestroying,
+		Message: "",
+		Since:   &now,
+	}
+	err := filesystem.SetStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
 	s.assertAddFilesystemStatus(c, filesystem, status.StatusDestroying)
 }
@@ -447,7 +455,7 @@ func (s *upgradesSuite) TestMigrateSettingsSchema(c *gc.C) {
 	}
 }
 
-func (s *upgradesSuite) setupAddDefaultEndpointBindingsToServices(c *gc.C) []*Service {
+func (s *upgradesSuite) setupAddDefaultEndpointBindingsToServices(c *gc.C) []*Application {
 	// Add an owner user.
 	stateOwner, err := s.state.AddUser("bob", "notused", "notused", "bob")
 	c.Assert(err, jc.ErrorIsNil)
@@ -481,7 +489,7 @@ func (s *upgradesSuite) setupAddDefaultEndpointBindingsToServices(c *gc.C) []*Se
 	msBindings := map[string]string{
 		"server": "db",
 	}
-	services := []*Service{
+	services := []*Application{
 		AddTestingService(c, s.state, "wp-no-bindings", charms[0], ownerTag),
 		AddTestingService(c, s.state, "ms-no-bindings", charms[1], ownerTag),
 
@@ -503,15 +511,15 @@ func (s *upgradesSuite) setupAddDefaultEndpointBindingsToServices(c *gc.C) []*Se
 	return services
 }
 
-func (s *upgradesSuite) getServicesBindings(c *gc.C, services []*Service) map[string]map[string]string {
+func (s *upgradesSuite) getServicesBindings(c *gc.C, services []*Application) map[string]map[string]string {
 	currentBindings := make(map[string]map[string]string, len(services))
 	for i := range services {
-		serviceName := services[i].Name()
+		applicationname := services[i].Name()
 		serviceBindings, err := services[i].EndpointBindings()
 		if err != nil {
-			c.Fatalf("unexpected error getting service %q bindings: %v", serviceName, err)
+			c.Fatalf("unexpected error getting service %q bindings: %v", applicationname, err)
 		}
-		currentBindings[serviceName] = serviceBindings
+		currentBindings[applicationname] = serviceBindings
 	}
 	return currentBindings
 }

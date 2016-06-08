@@ -10,7 +10,7 @@ import (
 	"github.com/juju/juju/watcher"
 	"github.com/juju/juju/worker"
 	"github.com/juju/loggo"
-	"github.com/juju/names"
+	"gopkg.in/juju/names.v2"
 )
 
 var logger = loggo.GetLogger("juju.worker.unitassigner")
@@ -77,7 +77,7 @@ func (u unitAssignerHandler) Handle(_ <-chan struct{}, ids []string) error {
 		for unit, err := range failures {
 			args.Entities[x] = params.EntityStatusArgs{
 				Tag:    unit,
-				Status: status.StatusError,
+				Status: status.StatusError.String(),
 				Info:   err.Error(),
 			}
 			x++

@@ -42,7 +42,7 @@ The autoload-credentials command looks for well known locations for supported cl
 allows the user to interactively save these into the Juju credentials store to make these
 available when bootstrapping new controllers and creating new models.
 
-The resulting credentials may be viewed with juju list-credentials.
+The resulting credentials may be viewed with ` + "`juju credentials`" + `.
 
 The clouds for which credentials may be autoloaded are:
 
@@ -66,7 +66,7 @@ Example:
    juju autoload-credentials
    
 See Also:
-   juju list-credentials
+   juju credentials
    juju add-credential
 `
 
@@ -151,13 +151,13 @@ func (c *detectCredentialsCommand) Run(ctxt *cmd.Context) error {
 		if err != nil {
 			// Should never happen but it will on go 1.2
 			// because lxd provider is not built.
-			logger.Warningf("provider %q not available on this platform", providerName)
+			logger.Errorf("provider %q not available on this platform", providerName)
 			continue
 		}
 		if detectCredentials, ok := provider.(environs.ProviderCredentials); ok {
 			detected, err := detectCredentials.DetectCredentials()
 			if err != nil && !errors.IsNotFound(err) {
-				logger.Warningf("could not detect credentials for provider %q: %v", providerName, err)
+				logger.Errorf("could not detect credentials for provider %q: %v", providerName, err)
 				continue
 			}
 			if errors.IsNotFound(err) || len(detected.AuthCredentials) == 0 {
@@ -167,7 +167,7 @@ func (c *detectCredentialsCommand) Run(ctxt *cmd.Context) error {
 			// For each credential, construct meta info for which cloud it may pertain to etc.
 			for credName, newCred := range detected.AuthCredentials {
 				if credName == "" {
-					logger.Warningf("ignoring unnamed credential for provider %s", providerName)
+					logger.Debugf("ignoring unnamed credential for provider %s", providerName)
 					continue
 				}
 				// Ignore empty credentials.

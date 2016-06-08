@@ -6,9 +6,9 @@ package unitassigner
 import (
 	"errors"
 
-	"github.com/juju/names"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/apiserver/params"
 	"github.com/juju/juju/status"
@@ -63,7 +63,7 @@ func (testsuite) TestHandleError(c *gc.C) {
 	c.Assert(entities, gc.HasLen, 1)
 	c.Assert(entities[0], gc.DeepEquals, params.EntityStatusArgs{
 		Tag:    "unit-foo-0",
-		Status: status.StatusError,
+		Status: status.StatusError.String(),
 		Info:   e.Error(),
 	})
 }

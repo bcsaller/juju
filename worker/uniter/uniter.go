@@ -12,12 +12,12 @@ import (
 
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
-	"github.com/juju/names"
 	"github.com/juju/utils"
 	"github.com/juju/utils/clock"
 	"github.com/juju/utils/exec"
 	"github.com/juju/utils/fslock"
 	corecharm "gopkg.in/juju/charm.v6-unstable"
+	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/api/uniter"
 	"github.com/juju/juju/apiserver/params"
@@ -148,10 +148,7 @@ func NewUniter(uniterParams *UniterParams) (*Uniter, error) {
 			return u.loop(uniterParams.UnitTag)
 		},
 	})
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	return u, nil
+	return u, errors.Trace(err)
 }
 
 func (u *Uniter) loop(unitTag names.UnitTag) (err error) {
@@ -159,7 +156,7 @@ func (u *Uniter) loop(unitTag names.UnitTag) (err error) {
 		if err == worker.ErrTerminateAgent {
 			return err
 		}
-		return fmt.Errorf("failed to initialize uniter for %q: %v", unitTag, err)
+		return errors.Annotatef(err, "failed to initialize uniter for %q", unitTag)
 	}
 	logger.Infof("unit %q started", u.unit)
 
@@ -185,7 +182,7 @@ func (u *Uniter) loop(unitTag names.UnitTag) (err error) {
 			return errors.Trace(err)
 		}
 		charmURL = curl
-		svc, err := u.unit.Service()
+		svc, err := u.unit.Application()
 		if err != nil {
 			return errors.Trace(err)
 		}
@@ -390,12 +387,16 @@ func (u *Uniter) terminate() error {
 	}
 }
 
-func (u *Uniter) setupLocks() (err error) {
-	if message := u.hookLock.Message(); u.hookLock.IsLocked() && message != "" {
+func (u *Uniter) setupLocks() error {
+	msg, err := u.hookLock.Message()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	if u.hookLock.IsLocked() && msg != "" {
 		// Look to see if it was us that held the lock before.  If it was, we
 		// should be safe enough to break it, as it is likely that we died
 		// before unlocking, and have been restarted by the init system.
-		parts := strings.SplitN(message, ":", 2)
+		parts := strings.SplitN(msg, ":", 2)
 		if len(parts) > 1 && parts[0] == u.unit.Name() {
 			if err := u.hookLock.BreakLock(); err != nil {
 				return err
@@ -516,7 +517,7 @@ func (u *Uniter) Wait() error {
 
 func (u *Uniter) getServiceCharmURL() (*corecharm.URL, error) {
 	// TODO(fwereade): pretty sure there's no reason to make 2 API calls here.
-	service, err := u.st.Service(u.unit.ServiceTag())
+	service, err := u.st.Application(u.unit.ApplicationTag())
 	if err != nil {
 		return nil, err
 	}
