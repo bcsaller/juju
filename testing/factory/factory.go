@@ -18,7 +18,6 @@ import (
 	"gopkg.in/juju/charm.v6-unstable"
 	"gopkg.in/juju/names.v2"
 
-	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/constraints"
 	"github.com/juju/juju/instance"
 	"github.com/juju/juju/network"
@@ -52,7 +51,7 @@ type UserParams struct {
 	Creator     names.Tag
 	NoModelUser bool
 	Disabled    bool
-	Access      state.ModelAccess
+	Access      state.Access
 }
 
 // ModelUserParams defines the parameters for creating an environment user.
@@ -60,7 +59,7 @@ type ModelUserParams struct {
 	User        string
 	DisplayName string
 	CreatedBy   names.Tag
-	Access      state.ModelAccess
+	Access      state.Access
 }
 
 // CharmParams defines the parameters for creating a charm.
@@ -89,7 +88,6 @@ type MachineParams struct {
 type ApplicationParams struct {
 	Name        string
 	Charm       *state.Charm
-	Creator     names.Tag
 	Status      *status.StatusInfo
 	Settings    map[string]interface{}
 	Constraints constraints.Value
@@ -119,15 +117,12 @@ type MetricParams struct {
 }
 
 type ModelParams struct {
-	Name        string
-	Owner       names.Tag
-	ConfigAttrs testing.Attrs
-
-	// If Prepare is true, the environment will be "prepared for bootstrap".
-	Prepare       bool
-	Credential    *cloud.Credential
-	CloudEndpoint string
-	CloudRegion   string
+	Name            string
+	Owner           names.Tag
+	ConfigAttrs     testing.Attrs
+	CloudName       string
+	CloudRegion     string
+	CloudCredential string
 }
 
 // RandomSuffix adds a random 5 character suffix to the presented string.
@@ -174,8 +169,8 @@ func (factory *Factory) MakeUser(c *gc.C, params *UserParams) *state.User {
 		c.Assert(err, jc.ErrorIsNil)
 		params.Creator = env.Owner()
 	}
-	if params.Access == state.ModelUndefinedAccess {
-		params.Access = state.ModelAdminAccess
+	if params.Access == state.UndefinedAccess {
+		params.Access = state.AdminAccess
 	}
 	creatorUserTag := params.Creator.(names.UserTag)
 	user, err := factory.st.AddUser(
@@ -212,8 +207,8 @@ func (factory *Factory) MakeModelUser(c *gc.C, params *ModelUserParams) *state.M
 	if params.DisplayName == "" {
 		params.DisplayName = uniqueString("display name")
 	}
-	if params.Access == state.ModelUndefinedAccess {
-		params.Access = state.ModelAdminAccess
+	if params.Access == state.UndefinedAccess {
+		params.Access = state.AdminAccess
 	}
 	if params.CreatedBy == nil {
 		env, err := factory.st.Model()
@@ -279,7 +274,7 @@ func (factory *Factory) MakeMachineNested(c *gc.C, parentId string, params *Mach
 	m, err := factory.st.AddMachineInsideMachine(
 		machineTemplate,
 		parentId,
-		instance.LXC,
+		instance.LXD,
 	)
 	c.Assert(err, jc.ErrorIsNil)
 	err = m.SetProvisioned(params.InstanceId, params.Nonce, params.Characteristics)
@@ -389,14 +384,8 @@ func (factory *Factory) MakeApplication(c *gc.C, params *ApplicationParams) *sta
 	if params.Name == "" {
 		params.Name = params.Charm.Meta().Name
 	}
-	if params.Creator == nil {
-		creator := factory.MakeUser(c, nil)
-		params.Creator = creator.Tag()
-	}
-	_ = params.Creator.(names.UserTag)
 	application, err := factory.st.AddApplication(state.AddApplicationArgs{
 		Name:        params.Name,
-		Owner:       params.Creator.String(),
 		Charm:       params.Charm,
 		Settings:    charm.Settings(params.Settings),
 		Constraints: params.Constraints,
@@ -570,6 +559,9 @@ func (factory *Factory) MakeModel(c *gc.C, params *ModelParams) *state.State {
 	if params.Name == "" {
 		params.Name = uniqueString("testenv")
 	}
+	if params.CloudName == "" {
+		params.CloudName = "dummy"
+	}
 	if params.Owner == nil {
 		origEnv, err := factory.st.Model()
 		c.Assert(err, jc.ErrorIsNil)
@@ -583,16 +575,16 @@ func (factory *Factory) MakeModel(c *gc.C, params *ModelParams) *state.State {
 	uuid, err := utils.NewUUID()
 	c.Assert(err, jc.ErrorIsNil)
 	cfg := testing.CustomModelConfig(c, testing.Attrs{
-		"name":       params.Name,
-		"uuid":       uuid.String(),
-		"type":       currentCfg.Type(),
-		"state-port": currentCfg.StatePort(),
-		"api-port":   currentCfg.APIPort(),
+		"name": params.Name,
+		"uuid": uuid.String(),
+		"type": currentCfg.Type(),
 	}.Merge(params.ConfigAttrs))
 	_, st, err := factory.st.NewModel(state.ModelArgs{
-		Cloud:  "dummy",
-		Config: cfg,
-		Owner:  params.Owner.(names.UserTag),
+		CloudName:       params.CloudName,
+		CloudRegion:     params.CloudRegion,
+		CloudCredential: params.CloudCredential,
+		Config:          cfg,
+		Owner:           params.Owner.(names.UserTag),
 	})
 	c.Assert(err, jc.ErrorIsNil)
 	return st

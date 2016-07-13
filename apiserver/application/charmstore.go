@@ -68,11 +68,11 @@ func AddCharmWithAuthorization(st *state.State, args params.AddCharmWithAuthoriz
 	if err != nil {
 		return err
 	}
-	envConfig, err := st.ModelConfig()
+	modelConfig, err := st.ModelConfig()
 	if err != nil {
 		return err
 	}
-	repo = config.SpecializeCharmRepo(repo, envConfig).(*charmrepo.CharmStore)
+	repo = config.SpecializeCharmRepo(repo, modelConfig).(*charmrepo.CharmStore)
 
 	// Get the charm and its information from the store.
 	downloadedCharm, err := repo.Get(charmURL)
@@ -263,11 +263,16 @@ func ResolveCharms(st *state.State, args params.ResolveCharms) (params.ResolveCh
 
 	for _, ref := range args.References {
 		result := params.ResolveCharmResult{}
-		curl, err := resolveCharm(&ref, repo)
+		curl, err := charm.ParseURL(ref)
 		if err != nil {
 			result.Error = err.Error()
 		} else {
-			result.URL = curl
+			curl, err := resolveCharm(curl, repo)
+			if err != nil {
+				result.Error = err.Error()
+			} else {
+				result.URL = curl.String()
+			}
 		}
 		results.URLs = append(results.URLs, result)
 	}

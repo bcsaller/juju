@@ -5,13 +5,14 @@ package agent
 
 import (
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/juju/cmd"
@@ -41,7 +42,9 @@ import (
 	apideployer "github.com/juju/juju/api/deployer"
 	"github.com/juju/juju/api/metricsmanager"
 	"github.com/juju/juju/apiserver"
+	"github.com/juju/juju/apiserver/observer"
 	"github.com/juju/juju/apiserver/params"
+	"github.com/juju/juju/audit"
 	"github.com/juju/juju/cert"
 	"github.com/juju/juju/cmd/jujud/agent/machine"
 	"github.com/juju/juju/cmd/jujud/agent/model"
@@ -96,7 +99,7 @@ var (
 	newCertificateUpdater = certupdater.NewCertificateUpdater
 	newMetadataUpdater    = imagemetadataworker.NewWorker
 	newUpgradeMongoWorker = mongoupgrader.New
-	reportOpenedState     = func(io.Closer) {}
+	reportOpenedState     = func(*state.State) {}
 )
 
 // Variable to override in tests, default is true
@@ -645,11 +648,6 @@ func (a *MachineAgent) startAPIWorkers(apiConn api.Connection) (_ worker.Worker,
 		}
 	}()
 
-	modelConfig, err := apiagent.NewState(apiConn).ModelConfig()
-	if err != nil {
-		return nil, fmt.Errorf("cannot read model config: %v", err)
-	}
-
 	// Perform the operations needed to set up hosting for containers.
 	if err := a.setupContainerSupport(runner, apiConn, agentConfig); err != nil {
 		cause := errors.Cause(err)
@@ -663,7 +661,7 @@ func (a *MachineAgent) startAPIWorkers(apiConn api.Connection) (_ worker.Worker,
 
 		// Published image metadata for some providers are in simple streams.
 		// Providers that do not depend on simple streams do not need this worker.
-		env, err := newEnvirons(modelConfig)
+		env, err := environs.GetEnviron(apiagent.NewState(apiConn), newEnvirons)
 		if err != nil {
 			return nil, errors.Annotate(err, "getting environ")
 		}
@@ -752,7 +750,7 @@ func (a *MachineAgent) setupContainerSupport(runner worker.Runner, st api.Connec
 	var supportedContainers []instance.ContainerType
 	supportsContainers := container.ContainersSupported()
 	if supportsContainers {
-		supportedContainers = append(supportedContainers, instance.LXC, instance.LXD)
+		supportedContainers = append(supportedContainers, instance.LXD)
 	}
 
 	supportsKvm, err := kvm.IsKVMSupported()
@@ -794,10 +792,6 @@ func (a *MachineAgent) updateSupportedContainers(
 	if err := machine.SetSupportedContainers(containers...); err != nil {
 		return errors.Annotatef(err, "setting supported containers for %s", tag)
 	}
-	initLock, err := cmdutil.HookExecutionLock(agentConfig.DataDir())
-	if err != nil {
-		return err
-	}
 	// Start the watcher to fire when a container is first requested on the machine.
 	modelUUID, err := st.ModelTag()
 	if err != nil {
@@ -833,7 +827,7 @@ func (a *MachineAgent) updateSupportedContainers(
 		Machine:             machine,
 		Provisioner:         pr,
 		Config:              agentConfig,
-		InitLock:            initLock,
+		InitLockName:        agent.MachineLockName,
 	}
 	handler := provisioner.NewContainerSetupHandler(params)
 	a.startWorkerAfterUpgrade(runner, watcherName, func() (worker.Worker, error) {
@@ -884,8 +878,6 @@ func (a *MachineAgent) startStateWorkers(st *state.State) (worker.Worker, error)
 		switch job {
 		case state.JobHostUnits:
 			// Implemented elsewhere with workers that use the API.
-		case state.JobManageNetworking:
-			// Not used by state workers.
 		case state.JobManageModel:
 			useMultipleCPUs()
 			a.startWorkerAfterUpgrade(runner, "model worker manager", func() (worker.Worker, error) {
@@ -1057,7 +1049,15 @@ func (a *MachineAgent) newApiserverWorker(st *state.State, certChanged chan para
 	if err != nil {
 		return nil, err
 	}
-	w, err := apiserver.NewServer(st, listener, apiserver.ServerConfig{
+
+	// TODO(katco): We should be doing something more serious than
+	// logging audit errors. Failures in the auditing systems should
+	// stop the api server until the problem can be corrected.
+	auditErrorHandler := func(err error) {
+		logger.Criticalf("%v", err)
+	}
+
+	server, err := apiserver.NewServer(st, listener, apiserver.ServerConfig{
 		Cert:        cert,
 		Key:         key,
 		Tag:         tag,
@@ -1065,11 +1065,71 @@ func (a *MachineAgent) newApiserverWorker(st *state.State, certChanged chan para
 		LogDir:      logDir,
 		Validator:   a.limitLogins,
 		CertChanged: certChanged,
+		NewObserver: newObserverFn(
+			clock.WallClock,
+			jujuversion.Current,
+			agentConfig.Model().Id(),
+			newAuditEntrySink(st, logDir),
+			auditErrorHandler,
+		),
 	})
 	if err != nil {
 		return nil, errors.Annotate(err, "cannot start api server worker")
 	}
-	return w, nil
+
+	return server, nil
+}
+
+func newAuditEntrySink(st *state.State, logDir string) audit.AuditEntrySinkFn {
+	persistFn := st.PutAuditEntryFn()
+	fileSinkFn := audit.NewLogFileSink(logDir)
+	return func(entry audit.AuditEntry) error {
+		// We don't care about auditing anything but user actions.
+		if _, err := names.ParseUserTag(entry.OriginName); err != nil {
+			return nil
+		}
+		// TODO(wallyworld) - Pinger requests should not originate as a user action.
+		if strings.HasPrefix(entry.Operation, "Pinger:") {
+			return nil
+		}
+		persistErr := persistFn(entry)
+		sinkErr := fileSinkFn(entry)
+		if persistErr == nil {
+			return errors.Annotate(sinkErr, "cannot save audit record to file")
+		}
+		if sinkErr == nil {
+			return errors.Annotate(persistErr, "cannot save audit record to database")
+		}
+		return errors.Annotate(persistErr, "cannot save audit record to file or database")
+	}
+}
+
+func newObserverFn(
+	clock clock.Clock,
+	jujuServerVersion version.Number,
+	modelUUID string,
+	persistAuditEntry audit.AuditEntrySinkFn,
+	auditErrorHandler observer.ErrorHandler,
+) observer.ObserverFactory {
+	var connectionID int64
+	return observer.ObserverFactoryMultiplexer(
+		func() observer.Observer {
+			logger := loggo.GetLogger("juju.apiserver")
+			ctx := observer.RequestObserverContext{
+				Clock:  clock,
+				Logger: logger,
+			}
+			return observer.NewRequestObserver(ctx, atomic.AddInt64(&connectionID, 1))
+		},
+		func() observer.Observer {
+			ctx := &observer.AuditContext{
+				JujuServerVersion: jujuServerVersion,
+				ModelUUID:         modelUUID,
+			}
+			// TODO(katco): Pass in an error channel
+			return observer.NewAudit(ctx, persistAuditEntry, auditErrorHandler)
+		},
+	)
 }
 
 // limitLogins is called by the API server for each login attempt.
@@ -1266,24 +1326,22 @@ func (a *MachineAgent) upgradeWaiterWorker(name string, start func() (worker.Wor
 		logger.Debugf("upgrades done, starting worker %q", name)
 
 		// Upgrades are done, start the worker.
-		worker, err := start()
+		w, err := start()
 		if err != nil {
 			return err
 		}
 		// Wait for worker to finish or for us to be stopped.
-		waitCh := make(chan error)
+		done := make(chan error, 1)
 		go func() {
-			waitCh <- worker.Wait()
+			done <- w.Wait()
 		}()
 		select {
-		case err := <-waitCh:
-			logger.Debugf("worker %q exited with %v", name, err)
-			return err
+		case err := <-done:
+			return errors.Annotatef(err, "worker %q exited", name)
 		case <-stop:
 			logger.Debugf("stopping so killing worker %q", name)
-			worker.Kill()
+			return worker.Stop(w)
 		}
-		return <-waitCh // Ensure worker has stopped before returning.
 	})
 }
 
@@ -1375,13 +1433,8 @@ func (a *MachineAgent) uninstallAgent() error {
 	// its completion.
 	insideContainer := container.RunningInContainer()
 	if insideContainer {
-		// We're running inside LXC, so loop devices may leak. Detach
+		// We're running inside a container, so loop devices may leak. Detach
 		// any loop devices that are backed by files on this machine.
-		//
-		// It is necessary to do this here as well as in container/lxc,
-		// as container/lxc needs to check in the container's rootfs
-		// to see if the loop device is attached to the container; that
-		// will fail if the data-dir is removed first.
 		if err := a.loopDeviceManager.DetachLoopDevices("/", agentConfig.DataDir()); err != nil {
 			errs = append(errs, err)
 		}

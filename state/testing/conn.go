@@ -9,6 +9,7 @@ import (
 	gc "gopkg.in/check.v1"
 	"gopkg.in/juju/names.v2"
 
+	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/mongo"
 	"github.com/juju/juju/mongo/mongotest"
@@ -19,14 +20,32 @@ import (
 // Initialize initializes the state and returns it. If state was not
 // already initialized, and cfg is nil, the minimal default model
 // configuration will be used.
-func Initialize(c *gc.C, owner names.UserTag, cfg *config.Config, policy state.Policy) *state.State {
+func Initialize(c *gc.C, owner names.UserTag, cfg *config.Config, controllerInheritedConfig map[string]interface{}, policy state.Policy) *state.State {
 	if cfg == nil {
 		cfg = testing.ModelConfig(c)
 	}
 	mgoInfo := NewMongoInfo()
 	dialOpts := mongotest.DialOpts()
 
-	st, err := state.Initialize(owner, mgoInfo, "dummy", nil, cfg, dialOpts, policy)
+	controllerCfg := testing.FakeControllerConfig()
+	controllerCfg["controller-uuid"] = cfg.UUID()
+	st, err := state.Initialize(state.InitializeParams{
+		ControllerConfig: controllerCfg,
+		ControllerModelArgs: state.ModelArgs{
+			CloudName: "dummy",
+			Config:    cfg,
+			Owner:     owner,
+		},
+		ControllerInheritedConfig: controllerInheritedConfig,
+		CloudName:                 "dummy",
+		Cloud: cloud.Cloud{
+			Type:      "dummy",
+			AuthTypes: []cloud.AuthType{cloud.EmptyAuthType},
+		},
+		MongoInfo:     mgoInfo,
+		MongoDialOpts: dialOpts,
+		Policy:        policy,
+	})
 	c.Assert(err, jc.ErrorIsNil)
 	return st
 }
@@ -48,5 +67,5 @@ func NewState(c *gc.C) *state.State {
 	owner := names.NewLocalUserTag("test-admin")
 	cfg := testing.ModelConfig(c)
 	policy := MockPolicy{}
-	return Initialize(c, owner, cfg, &policy)
+	return Initialize(c, owner, cfg, nil, &policy)
 }

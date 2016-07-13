@@ -77,10 +77,6 @@ func allCollections() collectionSchema {
 		// everything in state.
 		controllersC: {global: true},
 
-		// This collection holds any model settings common to all models on
-		// a given cloud.
-		cloudSettingsC: {global: true},
-
 		// This collection is used to track progress when restoring a
 		// controller from backup.
 		restoreInfoC: {global: true},
@@ -132,10 +128,6 @@ func allCollections() collectionSchema {
 		// one model.
 		usersC: {
 			global: true,
-			indexes: []mgo.Index{{
-				// TODO(thumper): schema change to remove this index.
-				Key: []string{"name"},
-			}},
 		},
 
 		// This collection holds the last time the user connected to the API server.
@@ -150,18 +142,27 @@ func allCollections() collectionSchema {
 		// different models at a time.
 		usermodelnameC: {global: true},
 
+		// This collection holds cloud definitions.
+		cloudsC: {global: true},
+
+		// This collection holds users' cloud credentials.
+		cloudCredentialsC: {
+			global: true,
+			indexes: []mgo.Index{{
+				Key: []string{"owner", "cloud"},
+			}},
+		},
+
+		// This collection holds settings from various sources which
+		// are inherited and then forked by new models.
+		globalSettingsC: {global: true},
+
 		// This collection holds workload metrics reported by certain charms
 		// for passing onward to other tools.
 		metricsC: {global: true},
 
 		// This collection holds persistent state for the metrics manager.
 		metricsManagerC: {global: true},
-
-		// This collection holds lease data, which is per-model, but is
-		// not itself multi-model-aware; happily it will imminently be
-		// deprecated in favour of the non-global leasesC below.
-		// TODO(fwereade): drop leaseC entirely so can't use wrong const.
-		leaseC: {global: true},
 
 		// This collection was deprecated before multi-model support
 		// was implemented.
@@ -178,16 +179,23 @@ func allCollections() collectionSchema {
 		// Local collections
 		// =================
 
+		// This collection holds users related to a model and will be usde as one
+		// of the intersection axis of permissionsC
+		modelUsersC: {},
+
 		// This collection is basically a standard SQL intersection table; it
 		// references the global records of the users allowed access to a
-		// given collection.
-		modelUsersC: {},
+		// given operation.
+		permissionsC: {},
 
 		// This collection holds the last time the model user connected
 		// to the model.
 		modelUserLastConnectionC: {
 			rawAccess: true,
 		},
+
+		// This collection holds the source from where model settings came.
+		modelSettingsSourcesC: {},
 
 		// This collection contains governors that prevent certain kinds of
 		// changes from being accepted.
@@ -290,18 +298,6 @@ func allCollections() collectionSchema {
 
 		// -----
 
-		// These collections hold information associated with networking.
-		// TODO(dimitern): Remove the obsolete collections below once possible.
-		legacyipaddressesC: {
-			indexes: []mgo.Index{{
-				Key: []string{"uuid"},
-			}, {
-				Key: []string{"model-uuid", "state"},
-			}, {
-				Key: []string{"model-uuid", "subnetid"},
-			}},
-		},
-		// TODO(dimitern): End of obsolete networking collections.
 		providerIDsC:          {},
 		spacesC:               {},
 		subnetsC:              {},
@@ -368,6 +364,11 @@ func allCollections() collectionSchema {
 		// ======================
 
 		// metrics; status-history; logs; ..?
+
+		auditingC: {
+			global:    true,
+			rawAccess: true,
+		},
 	}
 }
 
@@ -381,23 +382,24 @@ const (
 	actionsC                 = "actions"
 	annotationsC             = "annotations"
 	assignUnitC              = "assignUnits"
+	auditingC                = "audit.log"
 	bakeryStorageItemsC      = "bakeryStorageItems"
 	blockDevicesC            = "blockdevices"
 	blocksC                  = "blocks"
 	charmsC                  = "charms"
 	cleanupsC                = "cleanups"
 	cloudimagemetadataC      = "cloudimagemetadata"
-	cloudSettingsC           = "cloudsettings"
+	cloudsC                  = "clouds"
+	cloudCredentialsC        = "cloudCredentials"
 	constraintsC             = "constraints"
 	containerRefsC           = "containerRefs"
 	controllersC             = "controllers"
 	filesystemAttachmentsC   = "filesystemAttachments"
 	filesystemsC             = "filesystems"
+	globalSettingsC          = "globalSettings"
 	guimetadataC             = "guimetadata"
 	guisettingsC             = "guisettings"
 	instanceDataC            = "instanceData"
-	legacyipaddressesC       = "ipaddresses"
-	leaseC                   = "lease"
 	leasesC                  = "leases"
 	machinesC                = "machines"
 	meterStatusC             = "meterStatus"
@@ -407,11 +409,13 @@ const (
 	migrationsStatusC        = "migrations.status"
 	migrationsActiveC        = "migrations.active"
 	migrationsC              = "migrations"
+	modelSettingsSourcesC    = "modelSettingsSources"
 	modelUserLastConnectionC = "modelUserLastConnection"
 	modelUsersC              = "modelusers"
 	modelsC                  = "models"
 	modelEntityRefsC         = "modelEntityRefs"
 	openedPortsC             = "openedPorts"
+	permissionsC             = "permissions"
 	providerIDsC             = "providerIDs"
 	rebootC                  = "reboot"
 	relationScopesC          = "relationscopes"

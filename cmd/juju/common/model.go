@@ -19,6 +19,7 @@ type ModelInfo struct {
 	ControllerUUID string                   `json:"controller-uuid" yaml:"controller-uuid"`
 	Owner          string                   `json:"owner" yaml:"owner"`
 	Cloud          string                   `json:"cloud" yaml:"cloud"`
+	CloudRegion    string                   `json:"region,omitempty" yaml:"region,omitempty"`
 	ProviderType   string                   `json:"type" yaml:"type"`
 	Life           string                   `json:"life" yaml:"life"`
 	Status         ModelStatus              `json:"status" yaml:"status"`
@@ -61,6 +62,7 @@ func ModelInfoFromParams(info params.ModelInfo, now time.Time) (ModelInfo, error
 		Life:           string(info.Life),
 		Status:         status,
 		Cloud:          info.Cloud,
+		CloudRegion:    info.CloudRegion,
 		ProviderType:   info.ProviderType,
 		Users:          ModelUserInfoFromParams(info.Users, now),
 	}, nil

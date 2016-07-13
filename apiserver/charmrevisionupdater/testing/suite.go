@@ -91,7 +91,9 @@ func (s *CharmSuite) AddMachine(c *gc.C, machineId string, job state.MachineJob)
 	c.Assert(m.Id(), gc.Equals, machineId)
 	cons, err := m.Constraints()
 	c.Assert(err, jc.ErrorIsNil)
-	inst, hc := jujutesting.AssertStartInstanceWithConstraints(c, s.jcSuite.Environ, m.Id(), cons)
+	controllerCfg, err := s.jcSuite.State.ControllerConfig()
+	c.Assert(err, jc.ErrorIsNil)
+	inst, hc := jujutesting.AssertStartInstanceWithConstraints(c, s.jcSuite.Environ, controllerCfg.ControllerUUID(), m.Id(), cons)
 	err = m.SetProvisioned(inst.Id(), "fake_nonce", hc)
 	c.Assert(err, jc.ErrorIsNil)
 }
@@ -117,8 +119,7 @@ func (s *CharmSuite) AddCharmWithRevision(c *gc.C, charmName string, rev int) *s
 func (s *CharmSuite) AddService(c *gc.C, charmName, serviceName string) {
 	ch, ok := s.charms[charmName]
 	c.Assert(ok, jc.IsTrue)
-	owner := s.jcSuite.AdminUserTag(c)
-	_, err := s.jcSuite.State.AddApplication(state.AddApplicationArgs{Name: serviceName, Owner: owner.String(), Charm: ch})
+	_, err := s.jcSuite.State.AddApplication(state.AddApplicationArgs{Name: serviceName, Charm: ch})
 	c.Assert(err, jc.ErrorIsNil)
 }
 

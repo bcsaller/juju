@@ -9,6 +9,7 @@ import (
 	"github.com/juju/version"
 	"gopkg.in/juju/names.v2"
 
+	"github.com/juju/juju/controller"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/instance"
 	"github.com/juju/juju/status"
@@ -102,6 +103,12 @@ type AgentEntity interface {
 type ModelAccessor interface {
 	WatchForModelConfigChanges() NotifyWatcher
 	ModelConfig() (*config.Config, error)
+}
+
+// ControllerAccessor defines the methods needed to
+// access controller information.
+type ControllerAccessor interface {
+	ControllerConfig() (controller.Config, error)
 }
 
 // UnitsWatcher defines the methods needed to retrieve an entity (a

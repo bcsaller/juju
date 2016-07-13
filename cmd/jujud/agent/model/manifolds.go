@@ -14,7 +14,6 @@ import (
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/worker"
-	"github.com/juju/juju/worker/addresser"
 	"github.com/juju/juju/worker/agent"
 	"github.com/juju/juju/worker/apicaller"
 	"github.com/juju/juju/worker/apiconfigwatcher"
@@ -121,7 +120,7 @@ func Manifolds(config ManifoldsConfig) dependency.Manifolds {
 			APICallerName: apiCallerName,
 			Entity:        modelTag,
 			Result:        life.IsNotDead,
-			Filter:        lifeFilter,
+			Filter:        LifeFilter,
 
 			NewFacade: lifeflag.NewFacade,
 			NewWorker: lifeflag.NewWorker,
@@ -130,7 +129,7 @@ func Manifolds(config ManifoldsConfig) dependency.Manifolds {
 			APICallerName: apiCallerName,
 			Entity:        modelTag,
 			Result:        life.IsNotAlive,
-			Filter:        lifeFilter,
+			Filter:        LifeFilter,
 
 			NewFacade: lifeflag.NewFacade,
 			NewWorker: lifeflag.NewWorker,
@@ -178,6 +177,9 @@ func Manifolds(config ManifoldsConfig) dependency.Manifolds {
 		environTrackerName: ifResponsible(environ.Manifold(environ.ManifoldConfig{
 			APICallerName:  apiCallerName,
 			NewEnvironFunc: environs.New,
+		})),
+		stateCleanerName: ifResponsible(cleaner.Manifold(cleaner.ManifoldConfig{
+			APICallerName: apiCallerName,
 		})),
 
 		// The undertaker is currently the only ifNotAlive worker.
@@ -234,12 +236,6 @@ func Manifolds(config ManifoldsConfig) dependency.Manifolds {
 			NewWorker: charmrevision.NewWorker,
 		})),
 		metricWorkerName: ifNotDead(metricworker.Manifold(metricworker.ManifoldConfig{
-			APICallerName: apiCallerName,
-		})),
-		stateCleanerName: ifNotDead(cleaner.Manifold(cleaner.ManifoldConfig{
-			APICallerName: apiCallerName,
-		})),
-		addressCleanerName: ifNotDead(addresser.Manifold(addresser.ManifoldConfig{
 			APICallerName: apiCallerName,
 		})),
 		statusHistoryPrunerName: ifNotDead(statushistorypruner.Manifold(statushistorypruner.ManifoldConfig{
@@ -317,6 +313,5 @@ const (
 	charmRevisionUpdaterName = "charm-revision-updater"
 	metricWorkerName         = "metric-worker"
 	stateCleanerName         = "state-cleaner"
-	addressCleanerName       = "address-cleaner"
 	statusHistoryPrunerName  = "status-history-pruner"
 )

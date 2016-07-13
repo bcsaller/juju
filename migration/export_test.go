@@ -4,7 +4,5 @@
 package migration
 
 var (
-	ControllerValues         = controllerValues
-	UpdateConfigFromProvider = updateConfigFromProvider
-	GetCharmStoragePath      = getCharmStoragePath
+	GetCharmStoragePath = getCharmStoragePath
 )

@@ -40,7 +40,7 @@ func (s *cmdModelSuite) run(c *gc.C, args ...string) *cmd.Context {
 
 func (s *cmdModelSuite) TestGrantModelCmdStack(c *gc.C) {
 	username := "bar@ubuntuone"
-	context := s.run(c, "grant", username, "admin")
+	context := s.run(c, "grant", username, "controller")
 	obtained := strings.Replace(testing.Stdout(context), "\n", "", -1)
 	expected := ""
 	c.Assert(obtained, gc.Equals, expected)
@@ -59,7 +59,7 @@ func (s *cmdModelSuite) TestRevokeModelCmdStack(c *gc.C) {
 	// Firstly share a model with a user
 	username := "bar@ubuntuone"
 	s.Factory.MakeModelUser(c, &factory.ModelUserParams{
-		User: username, Access: state.ModelReadAccess})
+		User: username, Access: state.ReadAccess})
 
 	// Because we are calling into juju through the main command,
 	// and the main command adds a warning logging writer, we need
@@ -67,7 +67,7 @@ func (s *cmdModelSuite) TestRevokeModelCmdStack(c *gc.C) {
 	loggo.RemoveWriter("warning")
 
 	// Then test that the unshare command stack is hooked up
-	context := s.run(c, "revoke", username, "admin")
+	context := s.run(c, "revoke", username, "controller")
 	obtained := strings.Replace(testing.Stdout(context), "\n", "", -1)
 	expected := ""
 	c.Assert(obtained, gc.Equals, expected)
@@ -81,7 +81,7 @@ func (s *cmdModelSuite) TestRevokeModelCmdStack(c *gc.C) {
 func (s *cmdModelSuite) TestModelUsersCmd(c *gc.C) {
 	// Firstly share an model with a user
 	username := "bar@ubuntuone"
-	context := s.run(c, "grant", username, "admin")
+	context := s.run(c, "grant", username, "controller")
 	user := names.NewUserTag(username)
 	modelUser, err := s.State.ModelUser(user)
 	c.Assert(err, jc.ErrorIsNil)
@@ -96,7 +96,7 @@ func (s *cmdModelSuite) TestModelUsersCmd(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(testing.Stdout(context), gc.Equals, ""+
 		"NAME                 ACCESS  LAST CONNECTION\n"+
-		"admin@local (admin)  write   just now\n"+
+		"admin@local (admin)  admin   just now\n"+
 		"bar@ubuntuone        read    never connected\n"+
 		"\n")
 

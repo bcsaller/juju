@@ -32,7 +32,7 @@ func (p environProvider) BootstrapConfig(args environs.BootstrapConfigParams) (*
 	case cloud.JSONFileAuthType:
 		var err error
 		filename := args.Credentials.Attributes()["file"]
-		args.Credentials, err = parseJSONAuthFile(filename)
+		args.Credentials, err = ParseJSONAuthFile(filename)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
@@ -52,7 +52,18 @@ func (p environProvider) BootstrapConfig(args environs.BootstrapConfigParams) (*
 	default:
 		return nil, errors.NotSupportedf("%q auth-type", authType)
 	}
-	return p.PrepareForCreateEnvironment(cfg)
+	// Ensure cloud info is in config.
+	var err error
+	cfg, err = cfg.Apply(map[string]interface{}{
+		cfgRegion: args.CloudRegion,
+		// TODO (anastasiamac 2016-06-09) at some stage will need to
+		//  also add endpoint and storage endpoint.
+	})
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	return p.PrepareForCreateEnvironment(args.ControllerUUID, cfg)
 }
 
 // PrepareForBootstrap implements environs.EnvironProvider.
@@ -79,7 +90,7 @@ func (environProvider) Schema() environschema.Fields {
 }
 
 // PrepareForCreateEnvironment is specified in the EnvironProvider interface.
-func (p environProvider) PrepareForCreateEnvironment(cfg *config.Config) (*config.Config, error) {
+func (p environProvider) PrepareForCreateEnvironment(controllerUUID string, cfg *config.Config) (*config.Config, error) {
 	return configWithDefaults(cfg)
 }
 

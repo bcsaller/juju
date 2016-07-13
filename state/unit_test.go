@@ -19,6 +19,7 @@ import (
 	"github.com/juju/juju/state/testing"
 	"github.com/juju/juju/status"
 	coretesting "github.com/juju/juju/testing"
+	"github.com/juju/juju/worker"
 )
 
 const (
@@ -368,7 +369,7 @@ func (s *UnitSuite) destroyMachineTestCases(c *gc.C) []destroyMachineTestCase {
 		_, err := s.State.AddMachineInsideMachine(state.MachineTemplate{
 			Series: "quantal",
 			Jobs:   []state.MachineJob{state.JobHostUnits},
-		}, tc.host.Id(), instance.LXC)
+		}, tc.host.Id(), instance.LXD)
 		c.Assert(err, jc.ErrorIsNil)
 		tc.target, err = s.service.AddUnit()
 		c.Assert(err, jc.ErrorIsNil)
@@ -502,7 +503,7 @@ func (s *UnitSuite) TestRemoveUnitMachineRetryContainer(c *gc.C) {
 			machine, err := s.State.AddMachineInsideMachine(state.MachineTemplate{
 				Series: "quantal",
 				Jobs:   []state.MachineJob{state.JobHostUnits},
-			}, host.Id(), instance.LXC)
+			}, host.Id(), instance.LXD)
 			c.Assert(err, jc.ErrorIsNil)
 			assertLife(c, machine, state.Alive)
 
@@ -875,8 +876,9 @@ func (s *UnitSuite) TestUnitSetAgentPresence(c *gc.C) {
 	pinger, err := s.unit.SetAgentPresence()
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(pinger, gc.NotNil)
-	defer pinger.Stop()
-
+	defer func() {
+		c.Assert(worker.Stop(pinger), jc.ErrorIsNil)
+	}()
 	s.State.StartSync()
 	alive, err = s.unit.AgentPresence()
 	c.Assert(err, jc.ErrorIsNil)
@@ -1768,4 +1770,26 @@ action-b-b:
 	for _, action := range actions2 {
 		c.Assert(action.Name(), gc.Matches, "^action-b-.")
 	}
+}
+
+func (s *UnitSuite) TestWorkloadVersion(c *gc.C) {
+	ch := state.AddTestingCharm(c, s.State, "dummy")
+	app := state.AddTestingService(c, s.State, "alexandrite", ch)
+	unit, err := app.AddUnit()
+	c.Assert(err, jc.ErrorIsNil)
+
+	version, err := unit.WorkloadVersion()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Check(version, gc.Equals, "")
+
+	unit.SetWorkloadVersion("3.combined")
+	version, err = unit.WorkloadVersion()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Check(version, gc.Equals, "3.combined")
+
+	regotUnit, err := s.State.Unit("alexandrite/0")
+	c.Assert(err, jc.ErrorIsNil)
+	version, err = regotUnit.WorkloadVersion()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Check(version, gc.Equals, "3.combined")
 }

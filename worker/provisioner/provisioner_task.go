@@ -5,7 +5,6 @@ package provisioner
 
 import (
 	"fmt"
-	"regexp"
 	"time"
 
 	"github.com/juju/errors"
@@ -24,6 +23,7 @@ import (
 	"github.com/juju/juju/environs/simplestreams"
 	"github.com/juju/juju/instance"
 	"github.com/juju/juju/network"
+	"github.com/juju/juju/state"
 	"github.com/juju/juju/state/multiwatcher"
 	"github.com/juju/juju/status"
 	"github.com/juju/juju/storage"
@@ -62,6 +62,7 @@ var _ MachineGetter = (*apiprovisioner.State)(nil)
 var _ ToolsFinder = (*apiprovisioner.State)(nil)
 
 func NewProvisionerTask(
+	controllerUUID string,
 	machineTag names.MachineTag,
 	harvestMode config.HarvestMode,
 	machineGetter MachineGetter,
@@ -82,6 +83,7 @@ func NewProvisionerTask(
 		workers = append(workers, retryWatcher)
 	}
 	task := &provisionerTask{
+		controllerUUID:             controllerUUID,
 		machineTag:                 machineTag,
 		machineGetter:              machineGetter,
 		toolsFinder:                toolsFinder,
@@ -108,6 +110,7 @@ func NewProvisionerTask(
 }
 
 type provisionerTask struct {
+	controllerUUID             string
 	machineTag                 names.MachineTag
 	machineGetter              MachineGetter
 	toolsFinder                ToolsFinder
@@ -388,7 +391,8 @@ func classifyMachine(machine ClassifiableMachine) (
 	case params.Dead:
 		return Dead, nil
 	}
-	if instId, err := machine.InstanceId(); err != nil {
+	instId, err := machine.InstanceId()
+	if err != nil {
 		if !params.IsCodeNotProvisioned(err) {
 			return None, errors.Annotatef(err, "failed to load machine id:%s, details:%v", machine.Id(), machine)
 		}
@@ -401,17 +405,12 @@ func classifyMachine(machine ClassifiableMachine) (
 			logger.Infof("found machine pending provisioning id:%s, details:%v", machine.Id(), machine)
 			return Pending, nil
 		}
-	} else {
-		logger.Infof("machine %s already started as instance %q", machine.Id(), instId)
-		if err != nil {
-			logger.Infof("Error fetching provisioning info")
-		} else {
-			isLxc := regexp.MustCompile(`\d+/lxc/\d+`)
-			isKvm := regexp.MustCompile(`\d+/kvm/\d+`)
-			if isLxc.MatchString(machine.Id()) || isKvm.MatchString(machine.Id()) {
-				return Maintain, nil
-			}
-		}
+		return None, nil
+	}
+	logger.Infof("machine %s already started as instance %q", machine.Id(), instId)
+
+	if state.ContainerTypeFromId(machine.Id()) != "" {
+		return Maintain, nil
 	}
 	return None, nil
 }
@@ -527,12 +526,17 @@ func (task *provisionerTask) constructInstanceConfig(
 			PublicImageSigningKey: publicKey,
 			MongoInfo:             stateInfo,
 		}
+		instanceConfig.Controller.Config = make(map[string]interface{})
+		for k, v := range pInfo.ControllerConfig {
+			instanceConfig.Controller.Config[k] = v
+		}
 	}
 
 	return instanceConfig, nil
 }
 
 func constructStartInstanceParams(
+	controllerUUID string,
 	machine *apiprovisioner.Machine,
 	instanceConfig *instancecfg.InstanceConfig,
 	provisioningInfo *params.ProvisioningInfo,
@@ -605,6 +609,7 @@ func constructStartInstanceParams(
 	}
 
 	return environs.StartInstanceParams{
+		ControllerUUID:    controllerUUID,
 		Constraints:       provisioningInfo.Constraints,
 		Tools:             possibleTools,
 		InstanceConfig:    instanceConfig,
@@ -661,6 +666,7 @@ func (task *provisionerTask) startMachines(machines []*apiprovisioner.Machine) e
 		}
 
 		startInstanceParams, err := constructStartInstanceParams(
+			task.controllerUUID,
 			m,
 			instanceCfg,
 			pInfo,

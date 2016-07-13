@@ -30,6 +30,7 @@ type Controller interface {
 	AllModels() (params.UserModelList, error)
 	DestroyController(args params.DestroyControllerArgs) error
 	ModelConfig() (params.ModelConfigResults, error)
+	ControllerConfig() (params.ControllerConfigResult, error)
 	ListBlockedModels() (params.ModelBlockInfoList, error)
 	RemoveBlocks(args params.RemoveBlocksArgs) error
 	WatchAllModels() (params.AllWatcherId, error)
@@ -40,6 +41,7 @@ type Controller interface {
 // ControllerAPI implements the environment manager interface and is
 // the concrete implementation of the api end point.
 type ControllerAPI struct {
+	*common.ControllerConfigAPI
 	state      *state.State
 	authorizer common.Authorizer
 	apiUser    names.UserTag
@@ -72,10 +74,11 @@ func NewControllerAPI(
 	}
 
 	return &ControllerAPI{
-		state:      st,
-		authorizer: authorizer,
-		apiUser:    apiUser,
-		resources:  resources,
+		ControllerConfigAPI: common.NewControllerConfig(st),
+		state:               st,
+		authorizer:          authorizer,
+		apiUser:             apiUser,
+		resources:           resources,
 	}, nil
 }
 
@@ -184,17 +187,22 @@ func (s *ControllerAPI) ListBlockedModels() (params.ModelBlockInfoList, error) {
 func (s *ControllerAPI) ModelConfig() (params.ModelConfigResults, error) {
 	result := params.ModelConfigResults{}
 
-	controllerEnv, err := s.state.ControllerModel()
+	controllerModel, err := s.state.ControllerModel()
 	if err != nil {
 		return result, errors.Trace(err)
 	}
 
-	config, err := controllerEnv.Config()
+	cfg, err := controllerModel.Config()
 	if err != nil {
 		return result, errors.Trace(err)
 	}
 
-	result.Config = config.AllAttrs()
+	result.Config = make(map[string]params.ConfigValue)
+	for name, val := range cfg.AllAttrs() {
+		result.Config[name] = params.ConfigValue{
+			Value: val,
+		}
+	}
 	return result, nil
 }
 

@@ -10,7 +10,6 @@ import (
 	"github.com/juju/errors"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
-	"gopkg.in/juju/charm.v6-unstable"
 	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/apiserver/action"
@@ -71,12 +70,10 @@ func (s *actionSuite) SetUpTest(c *gc.C) {
 		Charm: factory.MakeCharm(c, &jujuFactory.CharmParams{
 			Name: "dummy",
 		}),
-		Creator: s.AdminUserTag(c),
 	})
 	s.wordpress = factory.MakeApplication(c, &jujuFactory.ApplicationParams{
-		Name:    "wordpress",
-		Charm:   s.charm,
-		Creator: s.AdminUserTag(c),
+		Name:  "wordpress",
+		Charm: s.charm,
 	})
 	s.machine0 = factory.MakeMachine(c, &jujuFactory.MachineParams{
 		Series: "quantal",
@@ -91,9 +88,8 @@ func (s *actionSuite) SetUpTest(c *gc.C) {
 		Name: "mysql",
 	})
 	s.mysql = factory.MakeApplication(c, &jujuFactory.ApplicationParams{
-		Name:    "mysql",
-		Charm:   mysqlCharm,
-		Creator: s.AdminUserTag(c),
+		Name:  "mysql",
+		Charm: mysqlCharm,
 	})
 	s.machine1 = factory.MakeMachine(c, &jujuFactory.MachineParams{
 		Series: "quantal",
@@ -664,12 +660,10 @@ func (s *actionSuite) TestApplicationsCharmsActions(c *gc.C) {
 			Results: []params.ApplicationCharmActionsResult{
 				{
 					ApplicationTag: names.NewApplicationTag("dummy").String(),
-					Actions: &charm.Actions{
-						ActionSpecs: map[string]charm.ActionSpec{
-							"snapshot": {
-								Description: "Take a snapshot of the database.",
-								Params:      actionSchemas["snapshot"],
-							},
+					Actions: map[string]params.ActionSpec{
+						"snapshot": {
+							Description: "Take a snapshot of the database.",
+							Params:      actionSchemas["snapshot"],
 						},
 					},
 				},
@@ -681,12 +675,10 @@ func (s *actionSuite) TestApplicationsCharmsActions(c *gc.C) {
 			Results: []params.ApplicationCharmActionsResult{
 				{
 					ApplicationTag: names.NewApplicationTag("wordpress").String(),
-					Actions: &charm.Actions{
-						ActionSpecs: map[string]charm.ActionSpec{
-							"fakeaction": {
-								Description: "No description",
-								Params:      actionSchemas["fakeaction"],
-							},
+					Actions: map[string]params.ActionSpec{
+						"fakeaction": {
+							Description: "No description",
+							Params:      actionSchemas["fakeaction"],
 						},
 					},
 				},

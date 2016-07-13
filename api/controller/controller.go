@@ -5,28 +5,31 @@ package controller
 
 import (
 	"github.com/juju/errors"
-	"github.com/juju/loggo"
 	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/api"
 	"github.com/juju/juju/api/base"
+	"github.com/juju/juju/api/common"
 	"github.com/juju/juju/apiserver/params"
 )
-
-var logger = loggo.GetLogger("juju.api.controller")
 
 // Client provides methods that the Juju client command uses to interact
 // with the Juju controller.
 type Client struct {
 	base.ClientFacade
 	facade base.FacadeCaller
+	*common.ControllerConfigAPI
 }
 
 // NewClient creates a new `Client` based on an existing authenticated API
 // connection.
 func NewClient(st base.APICallCloser) *Client {
 	frontend, backend := base.NewClientFacade(st, "Controller")
-	return &Client{ClientFacade: frontend, facade: backend}
+	return &Client{
+		ClientFacade:        frontend,
+		facade:              backend,
+		ControllerConfigAPI: common.NewControllerConfig(backend),
+	}
 }
 
 // AllModels allows controller administrators to get the list of all the
@@ -58,7 +61,11 @@ func (c *Client) AllModels() ([]base.UserModel, error) {
 func (c *Client) ModelConfig() (map[string]interface{}, error) {
 	result := params.ModelConfigResults{}
 	err := c.facade.FacadeCall("ModelConfig", nil, &result)
-	return result.Config, err
+	values := make(map[string]interface{})
+	for name, val := range result.Config {
+		values[name] = val.Value
+	}
+	return values, err
 }
 
 // DestroyController puts the controller model into a "dying" state,
@@ -89,8 +96,8 @@ func (c *Client) RemoveBlocks() error {
 // WatchAllModels returns an AllWatcher, from which you can request
 // the Next collection of Deltas (for all models).
 func (c *Client) WatchAllModels() (*api.AllWatcher, error) {
-	info := new(api.WatchAll)
-	if err := c.facade.FacadeCall("WatchAllModels", nil, info); err != nil {
+	var info params.AllWatcherId
+	if err := c.facade.FacadeCall("WatchAllModels", nil, &info); err != nil {
 		return nil, err
 	}
 	return api.NewAllModelWatcher(c.facade.RawAPICaller(), &info.AllWatcherId), nil

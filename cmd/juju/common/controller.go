@@ -31,7 +31,7 @@ var allInstances = func(environ environs.Environ) ([]instance.Instance, error) {
 // bootstrap server into the connection information. This should only be run
 // once directly after Bootstrap. It assumes that there is just one instance
 // in the environment - the bootstrap instance.
-func SetBootstrapEndpointAddress(store jujuclient.ControllerStore, controllerName string, environ environs.Environ) error {
+func SetBootstrapEndpointAddress(store jujuclient.ControllerStore, controllerName string, apiPort int, environ environs.Environ) error {
 	instances, err := allInstances(environ)
 	if err != nil {
 		return errors.Trace(err)
@@ -51,8 +51,6 @@ func SetBootstrapEndpointAddress(store jujuclient.ControllerStore, controllerNam
 	if err != nil {
 		return errors.Annotate(err, "failed to get bootstrap instance addresses")
 	}
-	cfg := environ.Config()
-	apiPort := cfg.APIPort()
 	apiHostPorts := network.AddressesWithPort(netAddrs, apiPort)
 	return juju.UpdateControllerAddresses(store, controllerName, nil, apiHostPorts...)
 }
@@ -119,6 +117,7 @@ func WaitForAgentInitialisation(ctx *cmd.Context, c *modelcmd.ModelCommandBase, 
 		switch {
 		case errors.Cause(err) == io.EOF,
 			strings.HasSuffix(errorMessage, "connection is shut down"),
+			strings.HasSuffix(errorMessage, "no api connection available"),
 			strings.Contains(errorMessage, "spaces are still being discovered"):
 			ctx.Infof("Waiting for API to become available")
 			continue

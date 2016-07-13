@@ -6,7 +6,6 @@ package containerinit
 
 import (
 	"bytes"
-	"fmt"
 	"io/ioutil"
 	"path/filepath"
 	"strings"
@@ -20,7 +19,6 @@ import (
 	"github.com/juju/juju/cloudconfig/cloudinit"
 	"github.com/juju/juju/cloudconfig/instancecfg"
 	"github.com/juju/juju/container"
-	"github.com/juju/juju/environs"
 	"github.com/juju/juju/network"
 	"github.com/juju/juju/service"
 	"github.com/juju/juju/service/common"
@@ -65,8 +63,7 @@ var networkInterfacesFile = "/etc/network/interfaces"
 // Interfaces field.
 func GenerateNetworkConfig(networkConfig *container.NetworkConfig) (string, error) {
 	if networkConfig == nil || len(networkConfig.Interfaces) == 0 {
-		logger.Tracef("no network config to generate")
-		return "", nil
+		return "", errors.Errorf("missing container network config")
 	}
 	logger.Debugf("generating network config from %#v", *networkConfig)
 
@@ -99,6 +96,9 @@ func GenerateNetworkConfig(networkConfig *container.NetworkConfig) (string, erro
 		address, hasAddress := prepared.NameToAddress[name]
 		if !hasAddress {
 			output.WriteString("iface " + name + " inet manual\n")
+			continue
+		} else if address == string(network.ConfigDHCP) {
+			output.WriteString("iface " + name + " inet dhcp\n")
 			continue
 		}
 
@@ -148,6 +148,8 @@ func PrepareNetworkConfigFromInterfaces(interfaces []network.InterfaceInfo) *Pre
 
 		if cidr := info.CIDRAddress(); cidr != "" {
 			nameToAddress[info.InterfaceName] = cidr
+		} else if info.ConfigType == network.ConfigDHCP {
+			nameToAddress[info.InterfaceName] = string(network.ConfigDHCP)
 		}
 
 		for _, dns := range info.DNSServers {
@@ -181,17 +183,16 @@ func PrepareNetworkConfigFromInterfaces(interfaces []network.InterfaceInfo) *Pre
 // might include per-interface networking config if both networkConfig
 // is not nil and its Interfaces field is not empty.
 func newCloudInitConfigWithNetworks(series string, networkConfig *container.NetworkConfig) (cloudinit.CloudConfig, error) {
+	config, err := GenerateNetworkConfig(networkConfig)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 	cloudConfig, err := cloudinit.New(series)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	config, err := GenerateNetworkConfig(networkConfig)
-	if err != nil || len(config) == 0 {
-		return cloudConfig, errors.Trace(err)
-	}
 
 	cloudConfig.AddBootTextFile(networkInterfacesFile, config, 0644)
-	cloudConfig.AddRunCmd("ifup -a || true")
 	return cloudConfig, nil
 }
 
@@ -285,53 +286,12 @@ func TemplateUserData(
 	return data, nil
 }
 
-// defaultEtcNetworkInterfaces is the contents of
-// /etc/network/interfaces file which is left on the template LXC
-// container on shutdown. This is needed to allow cloned containers to
-// start in case no network config is provided during cloud-init, e.g.
-// when AUFS is used.
-const defaultEtcNetworkInterfaces = `
-# loopback interface
-auto lo
-iface lo inet loopback
-
-# primary interface
-auto eth0
-iface eth0 inet dhcp
-`
-
 func shutdownInitCommands(initSystem, series string) ([]string, error) {
-	// These files are removed just before the template shuts down.
-	cleanupOnShutdown := []string{
-		// We remove any dhclient lease files so there's no chance a
-		// clone to reuse a lease from the template it was cloned
-		// from.
-		"/var/lib/dhcp/dhclient*",
-		// Both of these sets of files below are recreated on boot and
-		// if we leave them in the template's rootfs boot logs coming
-		// from cloned containers will be appended. It's better to
-		// keep clean logs for diagnosing issues / debugging.
-		"/var/log/cloud-init*.log",
-	}
-
-	// Using EOC below as the template shutdown script is itself
-	// passed through cat > ... < EOF.
-	replaceNetConfCmd := fmt.Sprintf(
-		"/bin/cat > /etc/network/interfaces << EOC%sEOC\n  ",
-		defaultEtcNetworkInterfaces,
-	)
-	paths := strings.Join(cleanupOnShutdown, " ")
-	removeCmd := fmt.Sprintf("/bin/rm -fr %s\n  ", paths)
 	shutdownCmd := "/sbin/shutdown -h now"
 	name := "juju-template-restart"
 	desc := "juju shutdown job"
 
 	execStart := shutdownCmd
-	if environs.AddressAllocationEnabled("") { // we only care the provider is not MAAS here.
-		// Only do the cleanup and replacement of /e/n/i when address
-		// allocation feature flag is enabled.
-		execStart = replaceNetConfCmd + removeCmd + shutdownCmd
-	}
 
 	conf := common.Conf{
 		Desc:         desc,

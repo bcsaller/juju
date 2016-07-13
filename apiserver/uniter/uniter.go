@@ -155,35 +155,6 @@ func (u *UniterAPIV3) AllMachinePorts(args params.Entities) (params.MachinePorts
 	return result, nil
 }
 
-// ApplicationOwner returns the owner user for each given service tag.
-func (u *UniterAPIV3) ApplicationOwner(args params.Entities) (params.StringResults, error) {
-	result := params.StringResults{
-		Results: make([]params.StringResult, len(args.Entities)),
-	}
-	canAccess, err := u.accessService()
-	if err != nil {
-		return params.StringResults{}, err
-	}
-	for i, entity := range args.Entities {
-		tag, err := names.ParseApplicationTag(entity.Tag)
-		if err != nil {
-			result.Results[i].Error = common.ServerError(common.ErrPerm)
-			continue
-		}
-		if !canAccess(tag) {
-			result.Results[i].Error = common.ServerError(common.ErrPerm)
-			continue
-		}
-		service, err := u.getService(tag)
-		if err != nil {
-			result.Results[i].Error = common.ServerError(err)
-			continue
-		}
-		result.Results[i].Result = service.GetOwnerTag()
-	}
-	return result, nil
-}
-
 // AssignedMachine returns the machine tag for each given unit tag, or
 // an error satisfying params.IsCodeNotAssigned when a unit has no
 // assigned machine.
@@ -669,6 +640,75 @@ func (u *UniterAPIV3) SetCharmURL(args params.EntitiesCharmURL) (params.ErrorRes
 			}
 		}
 		result.Results[i].Error = common.ServerError(err)
+	}
+	return result, nil
+}
+
+// WorkloadVersion returns the workload version for all given units or services.
+func (u *UniterAPIV3) WorkloadVersion(args params.Entities) (params.StringResults, error) {
+	result := params.StringResults{
+		Results: make([]params.StringResult, len(args.Entities)),
+	}
+	canAccess, err := u.accessUnit()
+	if err != nil {
+		return params.StringResults{}, err
+	}
+	for i, entity := range args.Entities {
+		resultItem := &result.Results[i]
+		tag, err := names.ParseUnitTag(entity.Tag)
+		if err != nil {
+			resultItem.Error = common.ServerError(err)
+			continue
+		}
+		if !canAccess(tag) {
+			resultItem.Error = common.ServerError(common.ErrPerm)
+			continue
+		}
+		unit, err := u.getUnit(tag)
+		if err != nil {
+			resultItem.Error = common.ServerError(err)
+			continue
+		}
+		version, err := unit.WorkloadVersion()
+		if err != nil {
+			resultItem.Error = common.ServerError(err)
+			continue
+		}
+		resultItem.Result = version
+	}
+	return result, nil
+}
+
+// SetWorkloadVersion sets the workload version for each given unit. An error will
+// be returned if a unit is dead.
+func (u *UniterAPIV3) SetWorkloadVersion(args params.EntityWorkloadVersions) (params.ErrorResults, error) {
+	result := params.ErrorResults{
+		Results: make([]params.ErrorResult, len(args.Entities)),
+	}
+	canAccess, err := u.accessUnit()
+	if err != nil {
+		return params.ErrorResults{}, err
+	}
+	for i, entity := range args.Entities {
+		resultItem := &result.Results[i]
+		tag, err := names.ParseUnitTag(entity.Tag)
+		if err != nil {
+			resultItem.Error = common.ServerError(err)
+			continue
+		}
+		if !canAccess(tag) {
+			resultItem.Error = common.ServerError(common.ErrPerm)
+			continue
+		}
+		unit, err := u.getUnit(tag)
+		if err != nil {
+			resultItem.Error = common.ServerError(err)
+			continue
+		}
+		err = unit.SetWorkloadVersion(entity.WorkloadVersion)
+		if err != nil {
+			resultItem.Error = common.ServerError(err)
+		}
 	}
 	return result, nil
 }
@@ -1277,7 +1317,7 @@ func (u *UniterAPIV3) prepareRelationResult(rel *state.Relation, unit *state.Uni
 		Life: params.Life(rel.Life().String()),
 		Endpoint: multiwatcher.Endpoint{
 			ApplicationName: ep.ApplicationName,
-			Relation:        ep.Relation,
+			Relation:        multiwatcher.NewCharmRelation(ep.Relation),
 		},
 	}, nil
 }

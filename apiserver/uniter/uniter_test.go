@@ -72,17 +72,15 @@ func (s *uniterSuite) SetUpTest(c *gc.C) {
 		URL:  "cs:quantal/wordpress-3",
 	})
 	s.wordpress = factory.MakeApplication(c, &jujuFactory.ApplicationParams{
-		Name:    "wordpress",
-		Charm:   s.wpCharm,
-		Creator: s.AdminUserTag(c),
+		Name:  "wordpress",
+		Charm: s.wpCharm,
 	})
 	mysqlCharm := factory.MakeCharm(c, &jujuFactory.CharmParams{
 		Name: "mysql",
 	})
 	s.mysql = factory.MakeApplication(c, &jujuFactory.ApplicationParams{
-		Name:    "mysql",
-		Charm:   mysqlCharm,
-		Creator: s.AdminUserTag(c),
+		Name:  "mysql",
+		Charm: mysqlCharm,
 	})
 	s.wordpressUnit = factory.MakeUnit(c, &jujuFactory.UnitParams{
 		Application: s.wordpress,
@@ -780,6 +778,63 @@ func (s *uniterSuite) TestSetCharmURL(c *gc.C) {
 	c.Assert(needsUpgrade, jc.IsTrue)
 }
 
+func (s *uniterSuite) TestWorkloadVersion(c *gc.C) {
+	// Set wordpressUnit's workload version first.
+	err := s.wordpressUnit.SetWorkloadVersion("capulet")
+	c.Assert(err, jc.ErrorIsNil)
+	version, err := s.wordpressUnit.WorkloadVersion()
+	c.Assert(version, gc.Equals, "capulet")
+	c.Assert(err, jc.ErrorIsNil)
+
+	args := params.Entities{Entities: []params.Entity{
+		{Tag: "unit-mysql-0"},
+		{Tag: "unit-wordpress-0"},
+		{Tag: "unit-foo-42"},
+		{Tag: "application-wordpress"},
+		{Tag: "just-foo"},
+	}}
+
+	result, err := s.uniter.WorkloadVersion(args)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(result, gc.DeepEquals, params.StringResults{
+		Results: []params.StringResult{
+			{Error: apiservertesting.ErrUnauthorized},
+			{Result: "capulet"},
+			{Error: apiservertesting.ErrUnauthorized},
+			{Error: common.ServerError(errors.New(`"application-wordpress" is not a valid unit tag`))},
+			{Error: common.ServerError(errors.New(`"just-foo" is not a valid tag`))},
+		},
+	})
+}
+
+func (s *uniterSuite) TestSetWorkloadVersion(c *gc.C) {
+	currentVersion, err := s.wordpressUnit.WorkloadVersion()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(currentVersion, gc.Equals, "")
+
+	args := params.EntityWorkloadVersions{Entities: []params.EntityWorkloadVersion{
+		{Tag: "unit-mysql-0", WorkloadVersion: "allura"},
+		{Tag: "unit-wordpress-0", WorkloadVersion: "shiro"},
+		{Tag: "unit-foo-42", WorkloadVersion: "pidge"},
+	}}
+	result, err := s.uniter.SetWorkloadVersion(args)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(result, gc.DeepEquals, params.ErrorResults{
+		Results: []params.ErrorResult{
+			{apiservertesting.ErrUnauthorized},
+			{nil},
+			{apiservertesting.ErrUnauthorized},
+		},
+	})
+
+	// Verify the workload version was set.
+	err = s.wordpressUnit.Refresh()
+	c.Assert(err, jc.ErrorIsNil)
+	newVersion, err := s.wordpressUnit.WorkloadVersion()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(newVersion, gc.Equals, "shiro")
+}
+
 func (s *uniterSuite) TestCharmModifiedVersion(c *gc.C) {
 	args := params.Entities{Entities: []params.Entity{
 		{Tag: "application-mysql"},
@@ -1348,7 +1403,7 @@ func (s *uniterSuite) TestRelation(c *gc.C) {
 				Life: params.Life(rel.Life().String()),
 				Endpoint: multiwatcher.Endpoint{
 					ApplicationName: wpEp.ApplicationName,
-					Relation:        wpEp.Relation,
+					Relation:        multiwatcher.NewCharmRelation(wpEp.Relation),
 				},
 			},
 			{Error: apiservertesting.ErrUnauthorized},
@@ -1385,7 +1440,7 @@ func (s *uniterSuite) TestRelationById(c *gc.C) {
 				Life: params.Life(rel.Life().String()),
 				Endpoint: multiwatcher.Endpoint{
 					ApplicationName: wpEp.ApplicationName,
-					Relation:        wpEp.Relation,
+					Relation:        multiwatcher.NewCharmRelation(wpEp.Relation),
 				},
 			},
 			{Error: apiservertesting.ErrUnauthorized},
@@ -2128,29 +2183,6 @@ func (s *uniterSuite) TestUnitStatus(c *gc.C) {
 	})
 }
 
-func (s *uniterSuite) TestApplicationOwner(c *gc.C) {
-	args := params.Entities{Entities: []params.Entity{
-		{Tag: "unit-mysql-0"},
-		{Tag: "application-wordpress"},
-		{Tag: "unit-wordpress-0"},
-		{Tag: "unit-foo-42"},
-		{Tag: "machine-0"},
-		{Tag: "application-foo"},
-	}}
-	result, err := s.uniter.ApplicationOwner(args)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(result, jc.DeepEquals, params.StringResults{
-		Results: []params.StringResult{
-			{Error: apiservertesting.ErrUnauthorized},
-			{Result: s.AdminUserTag(c).String()},
-			{Error: apiservertesting.ErrUnauthorized},
-			{Error: apiservertesting.ErrUnauthorized},
-			{Error: apiservertesting.ErrUnauthorized},
-			{Error: apiservertesting.ErrUnauthorized},
-		},
-	})
-}
-
 func (s *uniterSuite) TestAssignedMachine(c *gc.C) {
 	args := params.Entities{Entities: []params.Entity{
 		{Tag: "unit-mysql-0"},
@@ -2417,7 +2449,6 @@ func (s *uniterNetworkConfigSuite) SetUpTest(c *gc.C) {
 	s.base.wordpress, err = s.base.State.AddApplication(state.AddApplicationArgs{
 		Name:  "wordpress",
 		Charm: s.base.wpCharm,
-		Owner: s.base.AdminUserTag(c).String(),
 		EndpointBindings: map[string]string{
 			"db":        "internal", // relation name
 			"admin-api": "public",   // extra-binding name
@@ -2435,9 +2466,8 @@ func (s *uniterNetworkConfigSuite) SetUpTest(c *gc.C) {
 		Name: "mysql",
 	})
 	s.base.mysql = factory.MakeApplication(c, &jujuFactory.ApplicationParams{
-		Name:    "mysql",
-		Charm:   mysqlCharm,
-		Creator: s.base.AdminUserTag(c),
+		Name:  "mysql",
+		Charm: mysqlCharm,
 	})
 	s.base.wordpressUnit = factory.MakeUnit(c, &jujuFactory.UnitParams{
 		Application: s.base.wordpress,

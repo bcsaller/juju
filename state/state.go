@@ -31,12 +31,14 @@ import (
 	"gopkg.in/mgo.v2/txn"
 
 	"github.com/juju/juju/apiserver/params"
+	"github.com/juju/juju/audit"
 	"github.com/juju/juju/constraints"
 	"github.com/juju/juju/core/lease"
 	"github.com/juju/juju/instance"
 	"github.com/juju/juju/mongo"
 	"github.com/juju/juju/network"
 	"github.com/juju/juju/state/cloudimagemetadata"
+	stateaudit "github.com/juju/juju/state/internal/audit"
 	statelease "github.com/juju/juju/state/lease"
 	"github.com/juju/juju/state/workers"
 	"github.com/juju/juju/status"
@@ -131,6 +133,12 @@ type StateServingInfo struct {
 // model UUID.
 func (st *State) IsController() bool {
 	return st.modelTag == st.controllerTag
+}
+
+// ControllerUUID returns the model UUID for the controller model
+// of this state instance.
+func (st *State) ControllerUUID() string {
+	return st.controllerTag.Id()
 }
 
 // RemoveAllModelDocs removes all documents from multi-model
@@ -260,19 +268,6 @@ func (st *State) start(controllerTag names.ModelTag) (err error) {
 	}()
 
 	st.controllerTag = controllerTag
-
-	// Read the cloud name for this state's model.
-	// We'll use it later when starting watchers.
-	models, closer := st.getCollection(modelsC)
-	defer closer()
-	var doc modelDoc
-	if err := models.FindId(st.ModelUUID()).Select(bson.D{{"cloud", 1}}).One(&doc); err != nil {
-		if err == mgo.ErrNotFound {
-			return errors.NotFoundf("model")
-		}
-		return errors.Trace(err)
-	}
-	st.cloudName = doc.Cloud
 
 	if identity := st.mongoInfo.Tag; identity != nil {
 		// TODO(fwereade): it feels a bit wrong to take this from MongoInfo -- I
@@ -706,26 +701,15 @@ func (st *State) Machine(id string) (*Machine, error) {
 }
 
 func (st *State) getMachineDoc(id string) (*machineDoc, error) {
-	machinesCollection, closer := st.getRawCollection(machinesC)
+	machinesCollection, closer := st.getCollection(machinesC)
 	defer closer()
 
 	var err error
 	mdoc := &machineDoc{}
-	for _, tryId := range []string{st.docID(id), id} {
-		err = machinesCollection.FindId(tryId).One(mdoc)
-		if err != mgo.ErrNotFound {
-			break
-		}
-	}
+	err = machinesCollection.FindId(id).One(mdoc)
+
 	switch err {
 	case nil:
-		// This is required to allow loading of machines before the
-		// model UUID migration has been applied to the machines
-		// collection. Without this, a machine agent can't come up to
-		// run the database migration.
-		if mdoc.Id == "" {
-			mdoc.Id = mdoc.DocID
-		}
 		return mdoc, nil
 	case mgo.ErrNotFound:
 		return nil, errors.NotFoundf("machine %s", id)
@@ -776,8 +760,6 @@ func (st *State) FindEntity(tag names.Tag) (Entity, error) {
 		return env, nil
 	case names.RelationTag:
 		return st.KeyRelation(id)
-	case names.IPAddressTag:
-		return st.IPAddressByTag(tag)
 	case names.ActionTag:
 		return st.ActionByTag(tag)
 	case names.CharmTag:
@@ -872,7 +854,6 @@ func (st *State) addPeerRelationsOps(applicationname string, peers map[string]ch
 type AddApplicationArgs struct {
 	Name             string
 	Series           string
-	Owner            string
 	Charm            *Charm
 	Channel          csparams.Channel
 	Storage          map[string]StorageConstraints
@@ -889,10 +870,6 @@ type AddApplicationArgs struct {
 // they will be created automatically.
 func (st *State) AddApplication(args AddApplicationArgs) (_ *Application, err error) {
 	defer errors.DeferredAnnotatef(&err, "cannot add application %q", args.Name)
-	ownerTag, err := names.ParseUserTag(args.Owner)
-	if err != nil {
-		return nil, errors.Annotatef(err, "Invalid ownertag %s", args.Owner)
-	}
 	// Sanity checks.
 	if !names.IsValidApplication(args.Name) {
 		return nil, errors.Errorf("invalid name")
@@ -911,9 +888,6 @@ func (st *State) AddApplication(args AddApplicationArgs) (_ *Application, err er
 		return nil, errors.Errorf("application already exists")
 	}
 	if err := checkModelActive(st); err != nil {
-		return nil, errors.Trace(err)
-	}
-	if _, err := st.ModelUser(ownerTag); err != nil {
 		return nil, errors.Trace(err)
 	}
 	if args.Storage == nil {
@@ -1018,7 +992,6 @@ func (st *State) AddApplication(args AddApplicationArgs) (_ *Application, err er
 		Channel:       string(args.Channel),
 		RelationCount: len(peers),
 		Life:          Alive,
-		OwnerTag:      args.Owner,
 	}
 
 	svc := newApplication(st, svcDoc)
@@ -1285,7 +1258,10 @@ func (st *State) addMachineWithPlacement(unit *Unit, placement *instance.Placeme
 			Dirty:       true,
 			Constraints: *unitCons,
 		}
-		return st.AddMachineInsideMachine(template, data.machineId, data.containerType)
+		if data.machineId != "" {
+			return st.AddMachineInsideMachine(template, data.machineId, data.containerType)
+		}
+		return st.AddMachineInsideNewMachine(template, template, data.containerType)
 	case directivePlacement:
 		// If a placement directive is to be used, do that here.
 		template := MachineTemplate{
@@ -1300,34 +1276,6 @@ func (st *State) addMachineWithPlacement(unit *Unit, placement *instance.Placeme
 		// Otherwise use an existing machine.
 		return st.Machine(data.machineId)
 	}
-}
-
-// AddIPAddress creates and returns a new IP address. It can return an
-// error satisfying IsNotValid() or IsAlreadyExists() when the addr
-// does not contain a valid IP, or when addr is already added.
-func (st *State) AddIPAddress(addr network.Address, subnetID string) (*IPAddress, error) {
-	return addIPAddress(st, addr, subnetID)
-}
-
-// IPAddress returns an existing IP address from the state.
-func (st *State) IPAddress(value string) (*IPAddress, error) {
-	return ipAddress(st, value)
-}
-
-// IPAddressByTag returns an existing IP address from the state
-// identified by its tag.
-func (st *State) IPAddressByTag(tag names.IPAddressTag) (*IPAddress, error) {
-	return ipAddressByTag(st, tag)
-}
-
-// AllocatedIPAddresses returns all the allocated addresses for a machine
-func (st *State) AllocatedIPAddresses(machineId string) ([]*IPAddress, error) {
-	return fetchIPAddresses(st, bson.D{{"machineid", machineId}})
-}
-
-// DeadIPAddresses returns all IP addresses with a Life of Dead
-func (st *State) DeadIPAddresses() ([]*IPAddress, error) {
-	return fetchIPAddresses(st, isDeadDoc)
 }
 
 // Service returns a service state by name.
@@ -1746,6 +1694,7 @@ func (st *State) SetAdminMongoPassword(password string) error {
 
 type controllersDoc struct {
 	Id               string `bson:"_id"`
+	CloudName        string `bson:"cloud"`
 	ModelUUID        string `bson:"model-uuid"`
 	MachineIds       []string
 	VotingMachineIds []string
@@ -1756,6 +1705,9 @@ type controllersDoc struct {
 // ControllerInfo holds information about currently
 // configured controller machines.
 type ControllerInfo struct {
+	// CloudName is the name of the cloud to which this controller is deployed.
+	CloudName string
+
 	// ModelTag identifies the initial model. Only the initial
 	// model is able to have machines that manage state. The initial
 	// model is the model that is created when bootstrapping.
@@ -1808,10 +1760,14 @@ func readRawControllerInfo(session *mgo.Session) (*ControllerInfo, error) {
 
 	var doc controllersDoc
 	err := controllers.Find(bson.D{{"_id", modelGlobalKey}}).One(&doc)
+	if err == mgo.ErrNotFound {
+		return nil, errors.NotFoundf("controllers document")
+	}
 	if err != nil {
 		return nil, errors.Annotatef(err, "cannot get controllers document")
 	}
 	return &ControllerInfo{
+		CloudName:        doc.CloudName,
 		ModelTag:         names.NewModelTag(doc.ModelUUID),
 		MachineIds:       doc.MachineIds,
 		VotingMachineIds: doc.VotingMachineIds,
@@ -1964,6 +1920,20 @@ func (st *State) networkEntityGlobalKeyRemoveOp(globalKey string, providerId net
 
 func (st *State) networkEntityGlobalKey(globalKey string, providerId network.Id) string {
 	return st.docID(globalKey + ":" + string(providerId))
+}
+
+// PutAuditEntryFn returns a function which will persist
+// audit.AuditEntry instances to the database.
+func (st *State) PutAuditEntryFn() func(audit.AuditEntry) error {
+	insert := func(collectionName string, docs ...interface{}) error {
+		collection, closeCollection := st.getCollection(collectionName)
+		defer closeCollection()
+
+		writeableCollection := collection.Writeable()
+
+		return errors.Trace(writeableCollection.Insert(docs...))
+	}
+	return stateaudit.PutAuditEntryFn(auditingC, insert)
 }
 
 var tagPrefix = map[byte]string{

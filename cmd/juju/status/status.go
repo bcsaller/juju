@@ -45,7 +45,7 @@ Displays the current status of Juju, applications, and units.`[1:]
 var usageDetails = `
 By default (without argument), the status of Juju and all applications and all
 units will be displayed. 
-Appliction or unit names may be used as output filters (the '*' can be used
+Application or unit names may be used as output filters (the '*' can be used
 as a wildcard character).  
 In addition to matched applications and units, related machines, applications, and
 units will also be displayed. If a subordinate unit is matched, then its
@@ -138,7 +138,7 @@ func (c *statusCommand) Run(ctx *cmd.Context) error {
 		return errors.Errorf("unable to obtain the current status")
 	}
 
-	formatter := NewStatusFormatter(status, c.isoTime)
+	formatter := newStatusFormatter(status, c.ControllerName(), c.isoTime)
 	formatted := formatter.format()
 	return c.out.Write(ctx, formatted)
 }

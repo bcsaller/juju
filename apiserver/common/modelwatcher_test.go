@@ -14,7 +14,7 @@ import (
 	"github.com/juju/juju/apiserver/params"
 	apiservertesting "github.com/juju/juju/apiserver/testing"
 	"github.com/juju/juju/cmd/modelcmd"
-	"github.com/juju/juju/environs"
+	"github.com/juju/juju/environs/bootstrap"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/jujuclient/jujuclienttesting"
 	"github.com/juju/juju/provider/dummy"
@@ -120,13 +120,15 @@ func (*environWatcherSuite) TestModelConfigMaskedSecrets(c *gc.C) {
 }
 
 func testingEnvConfig(c *gc.C) *config.Config {
-	env, err := environs.Prepare(
+	env, err := bootstrap.Prepare(
 		modelcmd.BootstrapContext(testing.Context(c)),
 		jujuclienttesting.NewMemStore(),
-		environs.PrepareParams{
-			ControllerName: "dummycontroller",
-			BaseConfig:     dummy.SampleConfig(),
-			CloudName:      "dummy",
+		bootstrap.PrepareParams{
+			ControllerConfig: testing.FakeControllerConfig(),
+			ControllerName:   "dummycontroller",
+			BaseConfig:       dummy.SampleConfig(),
+			CloudName:        "dummy",
+			AdminSecret:      "admin-secret",
 		},
 	)
 	c.Assert(err, jc.ErrorIsNil)

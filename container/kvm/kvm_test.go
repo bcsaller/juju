@@ -105,12 +105,15 @@ func (s *KVMSuite) TestWriteTemplate(c *gc.C) {
 	params := kvm.CreateMachineParams{
 		Hostname:      "foo-bar",
 		NetworkBridge: "br0",
-		Interfaces: []network.InterfaceInfo{
-			{
-				MACAddress:          "00:16:3e:20:b0:11",
-				ParentInterfaceName: "br-eth0.10",
-			},
-		},
+		Interfaces: []network.InterfaceInfo{{
+			InterfaceName:       "eth0",
+			MACAddress:          "00:16:3e:20:b0:11",
+			ParentInterfaceName: "br-eth0.10",
+		}, {
+			InterfaceName:       "eth42",
+			MACAddress:          "00:16:3e:20:b0:12",
+			ParentInterfaceName: "virbr42",
+		}},
 	}
 	tempDir := c.MkDir()
 
@@ -122,10 +125,14 @@ func (s *KVMSuite) TestWriteTemplate(c *gc.C) {
 
 	template := string(templateBytes)
 
-	c.Assert(template, jc.Contains, "<name>foo-bar</name>")
-	c.Assert(template, jc.Contains, "<mac address='00:16:3e:20:b0:11'/>")
-	c.Assert(template, jc.Contains, "<source bridge='br-eth0.10'/>")
-	c.Assert(strings.Count(string(template), "<interface type='bridge'>"), gc.Equals, 1)
+	c.Check(template, jc.Contains, "<name>foo-bar</name>")
+	c.Check(strings.Count(template, "<interface type='bridge'>"), gc.Equals, 2)
+	c.Check(template, jc.Contains, "<source bridge='br-eth0.10'/>")
+	c.Check(template, jc.Contains, "<mac address='00:16:3e:20:b0:11'/>")
+	c.Check(template, jc.Contains, "<guest dev='eth0'/>")
+	c.Check(template, jc.Contains, "<source bridge='virbr42'/>")
+	c.Check(template, jc.Contains, "<mac address='00:16:3e:20:b0:12'/>")
+	c.Check(template, jc.Contains, "<guest dev='eth42'/>")
 }
 
 func (s *KVMSuite) TestCreateMachineUsesTemplate(c *gc.C) {
@@ -159,7 +166,7 @@ func (s *KVMSuite) TestCreateMachineUsesTemplate(c *gc.C) {
 }
 
 func (s *KVMSuite) TestDestroyContainer(c *gc.C) {
-	instance := containertesting.CreateContainer(c, s.manager, "1/lxc/0")
+	instance := containertesting.CreateContainer(c, s.manager, "1/kvm/0")
 
 	err := s.manager.DestroyContainer(instance.Id())
 	c.Assert(err, jc.ErrorIsNil)
@@ -297,14 +304,14 @@ func (s *ConstraintsSuite) TestDefaults(c *gc.C) {
 			`arch constraint of "armhf" being ignored as not supported`,
 		},
 	}, {
-		cons: "container=lxc",
+		cons: "container=lxd",
 		expected: kvm.StartParams{
 			Memory:   kvm.DefaultMemory,
 			CpuCores: kvm.DefaultCpu,
 			RootDisk: kvm.DefaultDisk,
 		},
 		infoLog: []string{
-			`container constraint of "lxc" being ignored as not supported`,
+			`container constraint of "lxd" being ignored as not supported`,
 		},
 	}, {
 		cons: "cpu-power=100",
@@ -327,7 +334,7 @@ func (s *ConstraintsSuite) TestDefaults(c *gc.C) {
 			`tags constraint of "foo,bar" being ignored as not supported`,
 		},
 	}, {
-		cons: "mem=4G cpu-cores=4 root-disk=20G arch=armhf cpu-power=100 container=lxc tags=foo,bar",
+		cons: "mem=4G cpu-cores=4 root-disk=20G arch=armhf cpu-power=100 container=lxd tags=foo,bar",
 		expected: kvm.StartParams{
 			Memory:   4 * 1024,
 			CpuCores: 4,
@@ -335,7 +342,7 @@ func (s *ConstraintsSuite) TestDefaults(c *gc.C) {
 		},
 		infoLog: []string{
 			`arch constraint of "armhf" being ignored as not supported`,
-			`container constraint of "lxc" being ignored as not supported`,
+			`container constraint of "lxd" being ignored as not supported`,
 			`cpu-power constraint of 100 being ignored as not supported`,
 			`tags constraint of "foo,bar" being ignored as not supported`,
 		},

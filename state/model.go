@@ -14,6 +14,8 @@ import (
 	"gopkg.in/mgo.v2/bson"
 	"gopkg.in/mgo.v2/txn"
 
+	jujucloud "github.com/juju/juju/cloud"
+	"github.com/juju/juju/constraints"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/mongo"
 	"github.com/juju/juju/status"
@@ -60,8 +62,17 @@ type modelDoc struct {
 	ServerUUID    string        `bson:"server-uuid"`
 	MigrationMode MigrationMode `bson:"migration-mode"`
 
-	// Cloud is the name of the cloud that the model is managed within.
+	// Cloud is the name of the cloud to which the model is deployed.
 	Cloud string `bson:"cloud"`
+
+	// CloudRegion is the name of the cloud region to which the model is
+	// deployed. This will be empty for clouds that do not support regions.
+	CloudRegion string `bson:"cloud-region,omitempty"`
+
+	// CloudCredential is the name of the cloud credential that is used
+	// for managing cloud resources for this model. This will be empty
+	// for clouds that do not require credentials.
+	CloudCredential string `bson:"cloud-credential,omitempty"`
 
 	// LatestAvailableTools is a string representing the newest version
 	// found while checking streams for new versions.
@@ -140,11 +151,23 @@ func (st *State) AllModels() ([]*Model, error) {
 
 // ModelArgs is a params struct for creating a new model.
 type ModelArgs struct {
-	// Cloud is the name of the cloud that the model is deployed to.
-	Cloud string
+	// CloudName is the name of the cloud to which the model is deployed.
+	CloudName string
+
+	// CloudRegion is the name of the cloud region to which the model is
+	// deployed. This will be empty for clouds that do not support regions.
+	CloudRegion string
+
+	// CloudCredential is the name of the cloud credential that will be
+	// used for managing cloud resources for this model. This will be empty
+	// for clouds that do not require credentials.
+	CloudCredential string
 
 	// Config is the model config.
 	Config *config.Config
+
+	// Constraints contains the initial constraints for the model.
+	Constraints constraints.Value
 
 	// Owner is the user that owns the model.
 	Owner names.UserTag
@@ -155,11 +178,11 @@ type ModelArgs struct {
 
 // Validate validates the ModelArgs.
 func (m ModelArgs) Validate() error {
-	if m.Cloud == "" {
-		return errors.NotValidf("empty Cloud")
-	}
 	if m.Config == nil {
 		return errors.NotValidf("nil Config")
+	}
+	if m.CloudName == "" {
+		return errors.NotValidf("empty Cloud Name")
 	}
 	if m.Owner == (names.UserTag{}) {
 		return errors.NotValidf("empty Owner")
@@ -185,8 +208,42 @@ func (st *State) NewModel(args ModelArgs) (_ *Model, _ *State, err error) {
 	if err := args.Validate(); err != nil {
 		return nil, nil, errors.Trace(err)
 	}
+	// For now, the model cloud must be the same as the controller cloud.
+	controllerInfo, err := st.ControllerInfo()
+	if err != nil {
+		return nil, nil, errors.Trace(err)
+	}
+	if controllerInfo.CloudName != args.CloudName {
+		return nil, nil, errors.NewNotValid(
+			nil, fmt.Sprintf("controller cloud %s does not match model cloud %s", controllerInfo.CloudName, args.CloudName))
+	}
 
+	// Ensure that the cloud region is valid, or if one is not specified,
+	// that the cloud does not support regions.
+	controllerCloud, err := st.Cloud(args.CloudName)
+	if err != nil {
+		return nil, nil, errors.Trace(err)
+	}
+	assertCloudRegionOp, err := validateCloudRegion(controllerCloud, args.CloudName, args.CloudRegion)
+	if err != nil {
+		return nil, nil, errors.Trace(err)
+	}
+
+	// Ensure that the cloud credential is valid, or if one is not
+	// specified, that the cloud supports the "empty" authentication
+	// type.
 	owner := args.Owner
+	cloudCredentials, err := st.CloudCredentials(owner, args.CloudName)
+	if err != nil {
+		return nil, nil, errors.Trace(err)
+	}
+	assertCloudCredentialOp, err := validateCloudCredential(
+		controllerCloud, args.CloudName, cloudCredentials, args.CloudCredential, owner,
+	)
+	if err != nil {
+		return nil, nil, errors.Trace(err)
+	}
+
 	if owner.IsLocal() {
 		if _, err := st.User(owner); err != nil {
 			return nil, nil, errors.Annotate(err, "cannot create model")
@@ -204,15 +261,18 @@ func (st *State) NewModel(args ModelArgs) (_ *Model, _ *State, err error) {
 			newSt.Close()
 		}
 	}()
+	newSt.controllerTag = st.controllerTag
 
-	cloudCfg, err := st.CloudConfig()
-	if err != nil {
-		return nil, nil, errors.Annotate(err, "could not read cloud config for new model")
-	}
-	ops, err := newSt.modelSetupOps(args.Config, args.Cloud, cloudCfg, owner, args.MigrationMode)
+	modelOps, err := newSt.modelSetupOps(args, nil)
 	if err != nil {
 		return nil, nil, errors.Annotate(err, "failed to create new model")
 	}
+
+	prereqOps := []txn.Op{
+		assertCloudRegionOp,
+		assertCloudCredentialOp,
+	}
+	ops := append(prereqOps, modelOps...)
 	err = newSt.runTransaction(ops)
 	if err == txn.ErrAborted {
 
@@ -252,6 +312,74 @@ func (st *State) NewModel(args ModelArgs) (_ *Model, _ *State, err error) {
 	return newModel, newSt, nil
 }
 
+// validateCloudRegion validates the given region name against the
+// provided Cloud definition, and returns a txn.Op to include in a
+// transaction to assert the same.
+func validateCloudRegion(cloud jujucloud.Cloud, cloudName, regionName string) (txn.Op, error) {
+	// Ensure that the cloud region is valid, or if one is not specified,
+	// that the cloud does not support regions.
+	assertCloudRegionOp := txn.Op{
+		C:  cloudsC,
+		Id: cloudName,
+	}
+	if regionName != "" {
+		region, err := jujucloud.RegionByName(cloud.Regions, regionName)
+		if err != nil {
+			return txn.Op{}, errors.Trace(err)
+		}
+		assertCloudRegionOp.Assert = bson.D{
+			{"regions." + region.Name, bson.D{{"$exists", true}}},
+		}
+	} else {
+		if len(cloud.Regions) > 0 {
+			return txn.Op{}, errors.NotValidf("missing CloudRegion")
+		}
+		assertCloudRegionOp.Assert = bson.D{
+			{"regions", bson.D{{"$exists", false}}},
+		}
+	}
+	return assertCloudRegionOp, nil
+}
+
+// validateCloudCredential validates the given cloud credential
+// name against the provided cloud definition and credentials,
+// and returns a txn.Op to include in a transaction to assert the
+// same.
+func validateCloudCredential(
+	cloud jujucloud.Cloud,
+	cloudName string,
+	cloudCredentials map[string]jujucloud.Credential,
+	cloudCredentialName string,
+	cloudCredentialOwner names.UserTag,
+) (txn.Op, error) {
+	if cloudCredentialName != "" {
+		if _, ok := cloudCredentials[cloudCredentialName]; !ok {
+			return txn.Op{}, errors.NotFoundf("credential %q", cloudCredentialName)
+		}
+		return txn.Op{
+			C:      cloudCredentialsC,
+			Id:     cloudCredentialDocID(cloudCredentialOwner, cloudName, cloudCredentialName),
+			Assert: txn.DocExists,
+		}, nil
+	}
+	var hasEmptyAuth bool
+	for _, authType := range cloud.AuthTypes {
+		if authType != jujucloud.EmptyAuthType {
+			continue
+		}
+		hasEmptyAuth = true
+		break
+	}
+	if !hasEmptyAuth {
+		return txn.Op{}, errors.NotValidf("missing CloudCredential")
+	}
+	return txn.Op{
+		C:      cloudsC,
+		Id:     cloudName,
+		Assert: bson.D{{"auth-types", string(jujucloud.EmptyAuthType)}},
+	}, nil
+}
+
 // Tag returns a name identifying the model.
 // The returned name will be different from other Tag values returned
 // by any other entities from the same state.
@@ -286,9 +414,20 @@ func (m *Model) Name() string {
 	return m.doc.Name
 }
 
-// Cloud returns the name of the cloud that the model is deployed to.
+// Cloud returns the name of the cloud to which the model is deployed.
 func (m *Model) Cloud() string {
 	return m.doc.Cloud
+}
+
+// CloudRegion returns the name of the cloud region to which the model is deployed.
+func (m *Model) CloudRegion() string {
+	return m.doc.CloudRegion
+}
+
+// CloudCredential returns the name of the cloud credential used for managing the
+// model's cloud resources.
+func (m *Model) CloudCredential() string {
+	return m.doc.CloudCredential
 }
 
 // MigrationMode returns whether the model is active or being migrated.
@@ -371,6 +510,16 @@ func (m *Model) Config() (*config.Config, error) {
 	return st.ModelConfig()
 }
 
+// ConfigValues returns the config values for the model.
+func (m *Model) ConfigValues() (config.ConfigValues, error) {
+	st, closeState, err := m.getState()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	defer closeState()
+	return st.ModelConfigValues()
+}
+
 // UpdateLatestToolsVersion looks up for the latest available version of
 // juju tools and updates environementDoc with it.
 func (m *Model) UpdateLatestToolsVersion(ver version.Number) error {
@@ -443,10 +592,11 @@ func (m *Model) Users() ([]*ModelUser, error) {
 
 	var modelUsers []*ModelUser
 	for _, doc := range userDocs {
-		modelUsers = append(modelUsers, &ModelUser{
-			st:  m.st,
-			doc: doc,
-		})
+		mu, err := NewModelUser(m.st, doc)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		modelUsers = append(modelUsers, mu)
 	}
 
 	return modelUsers, nil
@@ -460,7 +610,7 @@ func (m *Model) Users() ([]*ModelUser, error) {
 // If called on a controller model, and that controller is
 // hosting any non-Dead models, this method will return an
 // error satisfying IsHasHostedsError.
-func (m *Model) Destroy() (err error) {
+func (m *Model) Destroy() error {
 	ensureNoHostedModels := false
 	if m.doc.UUID == m.doc.ServerUUID {
 		ensureNoHostedModels = true
@@ -548,22 +698,29 @@ func (m *Model) destroyOps(ensureNoHostedModels, ensureEmpty bool) ([]txn.Op, er
 
 	// Check if the model is empty. If it is, we can advance the model's
 	// lifecycle state directly to Dead.
-	var prereqOps []txn.Op
 	checkEmptyErr := m.checkEmpty()
 	isEmpty := checkEmptyErr == nil
-	uuid := m.UUID()
 	if ensureEmpty && !isEmpty {
 		return nil, errors.Trace(checkEmptyErr)
 	}
+
+	modelUUID := m.UUID()
+	nextLife := Dying
+	var prereqOps []txn.Op
 	if isEmpty {
-		prereqOps = append(prereqOps, txn.Op{
+		prereqOps = []txn.Op{{
 			C:  modelEntityRefsC,
-			Id: uuid,
+			Id: modelUUID,
 			Assert: bson.D{
 				{"machines", bson.D{{"$size", 0}}},
 				{"applications", bson.D{{"$size", 0}}},
 			},
-		})
+		}}
+		if modelUUID != m.doc.ServerUUID {
+			// The model is empty, and is not the controller
+			// model, so we can move it straight to Dead.
+			nextLife = Dead
+		}
 	}
 
 	if ensureNoHostedModels {
@@ -620,18 +777,12 @@ func (m *Model) destroyOps(ensureNoHostedModels, ensureEmpty bool) ([]txn.Op, er
 		prereqOps = append(prereqOps, assertHostedModelsOp(aliveEmpty+dead))
 	}
 
-	life := Dying
-	if isEmpty && uuid != m.doc.ServerUUID {
-		// The model is empty, and is not the admin
-		// model, so we can move it straight to Dead.
-		life = Dead
-	}
 	timeOfDying := nowToTheSecond()
 	modelUpdateValues := bson.D{
-		{"life", life},
+		{"life", nextLife},
 		{"time-of-dying", timeOfDying},
 	}
-	if life == Dead {
+	if nextLife == Dead {
 		modelUpdateValues = append(modelUpdateValues, bson.DocElem{
 			"time-of-death", timeOfDying,
 		})
@@ -639,7 +790,7 @@ func (m *Model) destroyOps(ensureNoHostedModels, ensureEmpty bool) ([]txn.Op, er
 
 	ops := []txn.Op{{
 		C:      modelsC,
-		Id:     uuid,
+		Id:     modelUUID,
 		Assert: isAliveDoc,
 		Update: bson.D{{"$set", modelUpdateValues}},
 	}}
@@ -648,8 +799,8 @@ func (m *Model) destroyOps(ensureNoHostedModels, ensureEmpty bool) ([]txn.Op, er
 	// arbitrarily long delays, we need to make sure every op
 	// causes a state change that's still consistent; so we make
 	// sure the cleanup ops are the last thing that will execute.
-	if uuid == m.doc.ServerUUID {
-		cleanupOp := st.newCleanupOp(cleanupModelsForDyingController, uuid)
+	if modelUUID == m.doc.ServerUUID {
+		cleanupOp := st.newCleanupOp(cleanupModelsForDyingController, modelUUID)
 		ops = append(ops, cleanupOp)
 	}
 	if !isEmpty {
@@ -659,10 +810,9 @@ func (m *Model) destroyOps(ensureNoHostedModels, ensureEmpty bool) ([]txn.Op, er
 		// hosted model in the course of destroying the controller. In
 		// that case we'll get errors if we try to enqueue hosted-model
 		// cleanups, because the cleanups collection is non-global.
-		cleanupMachinesOp := st.newCleanupOp(cleanupMachinesForDyingModel, uuid)
-		ops = append(ops, cleanupMachinesOp)
-		cleanupServicesOp := st.newCleanupOp(cleanupServicesForDyingModel, uuid)
-		ops = append(ops, cleanupServicesOp)
+		cleanupMachinesOp := st.newCleanupOp(cleanupMachinesForDyingModel, modelUUID)
+		cleanupServicesOp := st.newCleanupOp(cleanupServicesForDyingModel, modelUUID)
+		ops = append(ops, cleanupMachinesOp, cleanupServicesOp)
 	}
 	return append(prereqOps, ops...), nil
 }
@@ -779,15 +929,21 @@ func ensureDestroyable(st *State) error {
 
 // createModelOp returns the operation needed to create
 // an model document with the given name and UUID.
-func createModelOp(st *State, owner names.UserTag, name, uuid, server, cloud string, mode MigrationMode) txn.Op {
+func createModelOp(
+	owner names.UserTag,
+	name, uuid, server, cloudName, cloudRegion, cloudCredential string,
+	migrationMode MigrationMode,
+) txn.Op {
 	doc := &modelDoc{
-		UUID:          uuid,
-		Name:          name,
-		Life:          Alive,
-		Owner:         owner.Canonical(),
-		ServerUUID:    server,
-		MigrationMode: mode,
-		Cloud:         cloud,
+		UUID:            uuid,
+		Name:            name,
+		Life:            Alive,
+		Owner:           owner.Canonical(),
+		ServerUUID:      server,
+		MigrationMode:   migrationMode,
+		Cloud:           cloudName,
+		CloudRegion:     cloudRegion,
+		CloudCredential: cloudCredential,
 	}
 	return txn.Op{
 		C:      modelsC,
@@ -797,7 +953,7 @@ func createModelOp(st *State, owner names.UserTag, name, uuid, server, cloud str
 	}
 }
 
-func createModelEntityRefsOp(st *State, uuid string) txn.Op {
+func createModelEntityRefsOp(uuid string) txn.Op {
 	return txn.Op{
 		C:      modelEntityRefsC,
 		Id:     uuid,
@@ -812,10 +968,6 @@ type hostedModelCountDoc struct {
 	// RefCount is the number of models in the Juju system.
 	// We do not count the system model.
 	RefCount int `bson:"refcount"`
-}
-
-func assertNoHostedModelsOp() txn.Op {
-	return assertHostedModelsOp(0)
 }
 
 func assertHostedModelsOp(n int) txn.Op {

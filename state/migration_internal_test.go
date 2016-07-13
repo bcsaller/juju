@@ -23,6 +23,7 @@ func (s *MigrationSuite) TestKnownCollections(c *gc.C) {
 		modelsC,
 		modelUsersC,
 		modelUserLastConnectionC,
+		permissionsC,
 		settingsC,
 		sequenceC,
 		statusesC,
@@ -52,9 +53,12 @@ func (s *MigrationSuite) TestKnownCollections(c *gc.C) {
 		cleanupsC,
 		// We don't export the controller model at this stage.
 		controllersC,
-		// This is controller global and each cloud will have
-		// its own settings.
-		cloudSettingsC,
+		// Clouds aren't migrated. They must exist in the
+		// target controller already.
+		cloudsC,
+		// Cloud credentials aren't migrated. They must exist in the
+		// target controller already.
+		cloudCredentialsC,
 		// This is controller global, and related to the system state of the
 		// embedded GUI.
 		guimetadataC,
@@ -67,8 +71,6 @@ func (s *MigrationSuite) TestKnownCollections(c *gc.C) {
 		usermodelnameC,
 		// Metrics aren't migrated.
 		metricsC,
-		// leaseC is deprecated in favour of leasesC.
-		leaseC,
 		// Backup and restore information is not migrated.
 		restoreInfoC,
 		// upgradeInfoC is used to coordinate upgrades and schema migrations,
@@ -108,10 +110,6 @@ func (s *MigrationSuite) TestKnownCollections(c *gc.C) {
 		// separately.
 		modelEntityRefsC,
 
-		// This has been deprecated in 2.0, and should not contain any data
-		// we actually care about migrating.
-		legacyipaddressesC,
-
 		// The SSH host keys for each machine will be reported as each
 		// machine agent starts up.
 		sshHostKeysC,
@@ -119,6 +117,10 @@ func (s *MigrationSuite) TestKnownCollections(c *gc.C) {
 
 	// THIS SET WILL BE REMOVED WHEN MIGRATIONS ARE COMPLETE
 	todoCollections := set.NewStrings(
+		// model configuration
+		modelSettingsSourcesC,
+		globalSettingsC,
+
 		// model
 		cloudimagemetadataC,
 
@@ -156,6 +158,7 @@ func (s *MigrationSuite) TestKnownCollections(c *gc.C) {
 
 		// uncategorised
 		metricsManagerC, // should really be copied across
+		auditingC,
 	)
 
 	envCollections := set.NewStrings()
@@ -187,6 +190,8 @@ func (s *MigrationSuite) TestModelDocFields(c *gc.C) {
 		"MigrationMode",
 		"Owner",
 		"Cloud",
+		"CloudRegion",
+		"CloudCredential",
 		"LatestAvailableTools",
 	)
 	s.AssertExportedFields(c, modelDoc{}, fields)
@@ -204,9 +209,18 @@ func (s *MigrationSuite) TestEnvUserDocFields(c *gc.C) {
 		"DisplayName",
 		"CreatedBy",
 		"DateCreated",
-		"Access",
 	)
 	s.AssertExportedFields(c, modelUserDoc{}, fields)
+}
+
+func (s *MigrationSuite) TestPermissionDocFields(c *gc.C) {
+	fields := set.NewStrings(
+		"ID",
+		"ObjectGlobalKey",
+		"SubjectGlobalKey",
+		"Access",
+	)
+	s.AssertExportedFields(c, permissionDoc{}, fields)
 }
 
 func (s *MigrationSuite) TestEnvUserLastConnectionDocFields(c *gc.C) {
@@ -295,8 +309,6 @@ func (s *MigrationSuite) TestServiceDocFields(c *gc.C) {
 		"ModelUUID",
 		// Always alive, not explicitly exported.
 		"Life",
-		// OwnerTag is deprecated and should be deleted.
-		"OwnerTag",
 		// TxnRevno is mgo internals and should not be migrated.
 		"TxnRevno",
 		// UnitCount is handled by the number of units for the exported service.
@@ -355,10 +367,6 @@ func (s *MigrationSuite) TestUnitDocFields(c *gc.C) {
 		// TxnRevno isn't migrated.
 		"TxnRevno",
 		"PasswordHash",
-		// Obsolete and not migrated.
-		"Ports",
-		"PublicAddress",
-		"PrivateAddress",
 	)
 	todo := set.NewStrings(
 		"StorageAttachmentCount",

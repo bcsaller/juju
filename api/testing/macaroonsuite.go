@@ -16,7 +16,7 @@ import (
 	"gopkg.in/macaroon-bakery.v1/httpbakery"
 
 	"github.com/juju/juju/api"
-	"github.com/juju/juju/environs/config"
+	"github.com/juju/juju/controller"
 	jujutesting "github.com/juju/juju/juju/testing"
 	"github.com/juju/juju/testing/factory"
 )
@@ -52,8 +52,8 @@ func (s *MacaroonSuite) SetUpTest(c *gc.C) {
 		}
 		return []checkers.Caveat{checkers.DeclaredCaveat("username", username)}, nil
 	})
-	s.JujuConnSuite.ConfigAttrs = map[string]interface{}{
-		config.IdentityURL: s.discharger.Location(),
+	s.JujuConnSuite.ControllerConfigAttrs = map[string]interface{}{
+		controller.IdentityURL: s.discharger.Location(),
 	}
 	s.JujuConnSuite.SetUpTest(c)
 }

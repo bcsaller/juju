@@ -61,7 +61,7 @@ func (s *TrackerSuite) TestModelConfigFails(c *gc.C) {
 			Observer:       context,
 			NewEnvironFunc: newMockEnviron,
 		})
-		c.Check(err, gc.ErrorMatches, "cannot read environ config: no yuo")
+		c.Check(err, gc.ErrorMatches, "cannot create environ: no yuo")
 		c.Check(tracker, gc.IsNil)
 		context.CheckCallNames(c, "ModelConfig")
 	})

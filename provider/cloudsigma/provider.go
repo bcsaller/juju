@@ -77,7 +77,7 @@ func (environProvider) RestrictedConfigAttributes() []string {
 // additional configuration attributes are added to the config passed in
 // and returned.  This allows providers to add additional required config
 // for new environments that may be created in an existing juju server.
-func (environProvider) PrepareForCreateEnvironment(cfg *config.Config) (*config.Config, error) {
+func (environProvider) PrepareForCreateEnvironment(controllerUUID string, cfg *config.Config) (*config.Config, error) {
 	// Not even sure if this will ever make sense.
 	return nil, errors.NotImplementedf("PrepareForCreateEnvironment")
 }
@@ -92,14 +92,20 @@ func (environProvider) BootstrapConfig(args environs.BootstrapConfigParams) (*co
 		cfg, err = cfg.Apply(map[string]interface{}{
 			"username": credentialAttributes["username"],
 			"password": credentialAttributes["password"],
-			"region":   args.CloudRegion,
-			"endpoint": args.CloudEndpoint,
 		})
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
 	default:
 		return nil, errors.NotSupportedf("%q auth-type", authType)
+	}
+	// Ensure cloud info is in config.
+	cfg, err := cfg.Apply(map[string]interface{}{
+		"region":   args.CloudRegion,
+		"endpoint": args.CloudEndpoint,
+	})
+	if err != nil {
+		return nil, errors.Trace(err)
 	}
 	return cfg, nil
 }

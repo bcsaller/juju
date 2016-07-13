@@ -11,16 +11,22 @@ import (
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/cmd/modelcmd"
-	"github.com/juju/juju/juju/testing"
 	"github.com/juju/juju/jujuclient"
+	"github.com/juju/juju/jujuclient/jujuclienttesting"
 	coretesting "github.com/juju/juju/testing"
 )
 
 type CmdSuite struct {
-	testing.JujuConnSuite
+	coretesting.FakeJujuXDGDataHomeSuite
+	ControllerStore *jujuclienttesting.MemStore
 }
 
 var _ = gc.Suite(&CmdSuite{})
+
+func (s *CmdSuite) SetUpTest(c *gc.C) {
+	s.FakeJujuXDGDataHomeSuite.SetUpTest(c)
+	s.ControllerStore = jujuclienttesting.NewMemStore()
+}
 
 var deployTests = []struct {
 	args []string
@@ -49,7 +55,7 @@ func initExpectations(com *DeployCommand, store jujuclient.ClientStore) {
 		com.NumUnits = 1
 	}
 	com.SetClientStore(store)
-	com.SetModelName("admin")
+	com.SetModelName("controller")
 }
 
 func initDeployCommand(store jujuclient.ClientStore, args ...string) (*DeployCommand, error) {

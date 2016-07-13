@@ -138,9 +138,14 @@ func (p *provisioner) getStartTask(harvestMode config.HarvestMode) (ProvisionerT
 		errors.Errorf("expected names.MachineTag, got %T", tag)
 	}
 
-	envCfg, err := p.st.ModelConfig()
+	modelCfg, err := p.st.ModelConfig()
 	if err != nil {
 		return nil, errors.Annotate(err, "could not retrieve the model config.")
+	}
+
+	controllerCfg, err := p.st.ControllerConfig()
+	if err != nil {
+		return nil, errors.Annotate(err, "could not retrieve the controller config.")
 	}
 
 	secureServerConnection := false
@@ -148,6 +153,7 @@ func (p *provisioner) getStartTask(harvestMode config.HarvestMode) (ProvisionerT
 		secureServerConnection = info.CAPrivateKey != ""
 	}
 	task, err := NewProvisionerTask(
+		controllerCfg.ControllerUUID(),
 		machineTag,
 		harvestMode,
 		p.st,
@@ -156,7 +162,7 @@ func (p *provisioner) getStartTask(harvestMode config.HarvestMode) (ProvisionerT
 		retryWatcher,
 		p.broker,
 		auth,
-		envCfg.ImageStream(),
+		modelCfg.ImageStream(),
 		secureServerConnection,
 		RetryStrategy{retryDelay: retryStrategyDelay, retryCount: retryStrategyCount},
 	)

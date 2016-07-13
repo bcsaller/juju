@@ -12,6 +12,7 @@ import (
 	envtesting "github.com/juju/juju/environs/testing"
 	"github.com/juju/juju/provider/common"
 	"github.com/juju/juju/provider/gce"
+	"github.com/juju/juju/testing"
 )
 
 type environSuite struct {
@@ -64,13 +65,15 @@ func (s *environSuite) TestConfig(c *gc.C) {
 func (s *environSuite) TestBootstrap(c *gc.C) {
 	s.FakeCommon.Arch = "amd64"
 	s.FakeCommon.Series = "trusty"
-	finalizer := func(environs.BootstrapContext, *instancecfg.InstanceConfig) error {
+	finalizer := func(environs.BootstrapContext, *instancecfg.InstanceConfig, environs.BootstrapDialOpts) error {
 		return nil
 	}
 	s.FakeCommon.BSFinalizer = finalizer
 
 	ctx := envtesting.BootstrapContext(c)
-	params := environs.BootstrapParams{}
+	params := environs.BootstrapParams{
+		ControllerConfig: testing.FakeControllerConfig(),
+	}
 	result, err := s.Env.Bootstrap(ctx, params)
 	c.Assert(err, jc.ErrorIsNil)
 
@@ -82,7 +85,9 @@ func (s *environSuite) TestBootstrap(c *gc.C) {
 
 func (s *environSuite) TestBootstrapCommon(c *gc.C) {
 	ctx := envtesting.BootstrapContext(c)
-	params := environs.BootstrapParams{}
+	params := environs.BootstrapParams{
+		ControllerConfig: testing.FakeControllerConfig(),
+	}
 	_, err := s.Env.Bootstrap(ctx, params)
 	c.Assert(err, jc.ErrorIsNil)
 

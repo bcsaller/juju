@@ -21,7 +21,6 @@ import (
 	"github.com/juju/juju/constraints"
 	"github.com/juju/juju/rpc"
 	"github.com/juju/juju/state"
-	jujuversion "github.com/juju/juju/version"
 )
 
 type permSuite struct {
@@ -154,10 +153,6 @@ func (s *permSuite) TestOperationPerm(c *gc.C) {
 		op:    opClientWatchAll,
 		allow: []names.Tag{userAdmin, userOther},
 	}, {
-		about: "Client.CharmInfo",
-		op:    opClientCharmInfo,
-		allow: []names.Tag{userAdmin, userOther},
-	}, {
 		about: "Application.AddRelation",
 		op:    opClientAddRelation,
 		allow: []names.Tag{userAdmin, userOther},
@@ -184,31 +179,6 @@ func (s *permSuite) TestOperationPerm(c *gc.C) {
 			st.Close()
 		}
 	}
-}
-
-func opClientCharmInfo(c *gc.C, st api.Connection, mst *state.State) (func(), error) {
-	info, err := st.Client().CharmInfo("local:quantal/wordpress-3")
-	if err != nil {
-		c.Check(info, gc.IsNil)
-		return func() {}, err
-	}
-	c.Assert(info.URL, gc.Equals, "local:quantal/wordpress-3")
-	c.Assert(info.Meta.Name, gc.Equals, "wordpress")
-	c.Assert(info.Revision, gc.Equals, 3)
-	c.Assert(info.Actions, jc.DeepEquals, &charm.Actions{
-		ActionSpecs: map[string]charm.ActionSpec{
-			"fakeaction": {
-				Description: "No description",
-				Params: map[string]interface{}{
-					"type":        "object",
-					"description": "No description",
-					"properties":  map[string]interface{}{},
-					"title":       "fakeaction",
-				},
-			},
-		},
-	})
-	return func() {}, nil
 }
 
 func opClientAddRelation(c *gc.C, st api.Connection, mst *state.State) (func(), error) {
@@ -434,7 +404,8 @@ func opClientSetEnvironAgentVersion(c *gc.C, st api.Connection, mst *state.State
 	if err != nil {
 		return func() {}, err
 	}
-	err = st.Client().SetModelAgentVersion(jujuversion.Current)
+	ver := version.Number{Major: 1, Minor: 2, Patch: 3}
+	err = st.Client().SetModelAgentVersion(ver)
 	if err != nil {
 		return func() {}, err
 	}

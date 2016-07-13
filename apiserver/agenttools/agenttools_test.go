@@ -26,6 +26,14 @@ type dummyEnviron struct {
 	environs.Environ
 }
 
+type configGetter struct {
+	cfg *config.Config
+}
+
+func (s *configGetter) ModelConfig() (*config.Config, error) {
+	return s.cfg, nil
+}
+
 func (s *AgentToolsSuite) TestCheckTools(c *gc.C) {
 	sConfig := coretesting.FakeConfig()
 	sConfig = sConfig.Merge(coretesting.Attrs{
@@ -51,7 +59,7 @@ func (s *AgentToolsSuite) TestCheckTools(c *gc.C) {
 		return coretools.List{&t}, nil
 	}
 
-	ver, err := checkToolsAvailability(cfg, fakeToolFinder)
+	ver, err := checkToolsAvailability(&configGetter{cfg: cfg}, cfg, fakeToolFinder)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(ver, gc.Not(gc.Equals), version.Zero)
 	c.Assert(ver, gc.Equals, version.Number{Major: 2, Minor: 5, Patch: 0})
@@ -86,17 +94,18 @@ func (s *AgentToolsSuite) TestCheckToolsNonReleasedStream(c *gc.C) {
 		c.Assert(calledWithMinor, gc.Equals, 5)
 		return coretools.List{&t}, nil
 	}
-	ver, err := checkToolsAvailability(cfg, fakeToolFinder)
+	ver, err := checkToolsAvailability(&configGetter{cfg: cfg}, cfg, fakeToolFinder)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(calledWithStreams, gc.DeepEquals, []string{"released", "proposed"})
 	c.Assert(ver, gc.Not(gc.Equals), version.Zero)
 	c.Assert(ver, gc.Equals, version.Number{Major: 2, Minor: 5, Patch: 0})
 }
 
-type modelGetter struct {
+type mockState struct {
+	configGetter
 }
 
-func (e *modelGetter) Model() (*state.Model, error) {
+func (e *mockState) Model() (*state.Model, error) {
 	return &state.Model{}, nil
 }
 
@@ -106,14 +115,14 @@ func (s *AgentToolsSuite) TestUpdateToolsAvailability(c *gc.C) {
 	}
 	s.PatchValue(&newEnvirons, fakeNewEnvirons)
 
-	fakeEnvConfig := func(_ *state.Model) (*config.Config, error) {
+	fakeModelConfig := func(_ *state.Model) (*config.Config, error) {
 		sConfig := coretesting.FakeConfig()
 		sConfig = sConfig.Merge(coretesting.Attrs{
 			"agent-version": "2.5.0",
 		})
 		return config.New(config.NoDefaults, sConfig)
 	}
-	s.PatchValue(&envConfig, fakeEnvConfig)
+	s.PatchValue(&modelConfig, fakeModelConfig)
 
 	fakeToolFinder := func(_ environs.Environ, _ int, _ int, _ string, _ coretools.Filter) (coretools.List, error) {
 		ver := version.Binary{Number: version.Number{Major: 2, Minor: 5, Patch: 2}}
@@ -129,7 +138,9 @@ func (s *AgentToolsSuite) TestUpdateToolsAvailability(c *gc.C) {
 		return nil
 	}
 
-	err := updateToolsAvailability(&modelGetter{}, fakeToolFinder, fakeUpdate)
+	cfg, err := config.New(config.NoDefaults, coretesting.FakeConfig())
+	c.Assert(err, jc.ErrorIsNil)
+	err = updateToolsAvailability(&mockState{configGetter{cfg}}, fakeToolFinder, fakeUpdate)
 	c.Assert(err, jc.ErrorIsNil)
 
 	c.Assert(ver, gc.Not(gc.Equals), version.Zero)
@@ -142,14 +153,14 @@ func (s *AgentToolsSuite) TestUpdateToolsAvailabilityNoMatches(c *gc.C) {
 	}
 	s.PatchValue(&newEnvirons, fakeNewEnvirons)
 
-	fakeEnvConfig := func(_ *state.Model) (*config.Config, error) {
+	fakeModelConfig := func(_ *state.Model) (*config.Config, error) {
 		sConfig := coretesting.FakeConfig()
 		sConfig = sConfig.Merge(coretesting.Attrs{
 			"agent-version": "2.5.0",
 		})
 		return config.New(config.NoDefaults, sConfig)
 	}
-	s.PatchValue(&envConfig, fakeEnvConfig)
+	s.PatchValue(&modelConfig, fakeModelConfig)
 
 	// No new tools available.
 	fakeToolFinder := func(_ environs.Environ, _ int, _ int, _ string, _ coretools.Filter) (coretools.List, error) {
@@ -162,6 +173,8 @@ func (s *AgentToolsSuite) TestUpdateToolsAvailabilityNoMatches(c *gc.C) {
 		return nil
 	}
 
-	err := updateToolsAvailability(&modelGetter{}, fakeToolFinder, fakeUpdate)
+	cfg, err := config.New(config.NoDefaults, coretesting.FakeConfig())
+	c.Assert(err, jc.ErrorIsNil)
+	err = updateToolsAvailability(&mockState{configGetter{cfg}}, fakeToolFinder, fakeUpdate)
 	c.Assert(err, jc.ErrorIsNil)
 }

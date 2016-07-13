@@ -21,7 +21,7 @@ import (
 	"github.com/juju/juju/api"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/description"
-	"github.com/juju/juju/environs"
+	"github.com/juju/juju/environs/bootstrap"
 	"github.com/juju/juju/jujuclient/jujuclienttesting"
 	"github.com/juju/juju/migration"
 	"github.com/juju/juju/provider/dummy"
@@ -47,13 +47,15 @@ func (s *ImportSuite) SetUpTest(c *gc.C) {
 	// is one that isn't registered as a valid provider. For our tests here we
 	// need a real registered provider, so we use the dummy provider.
 	// NOTE: make a better test provider.
-	env, err := environs.Prepare(
+	env, err := bootstrap.Prepare(
 		modelcmd.BootstrapContext(testing.Context(c)),
 		jujuclienttesting.NewMemStore(),
-		environs.PrepareParams{
-			ControllerName: "dummycontroller",
-			BaseConfig:     dummy.SampleConfig(),
-			CloudName:      "dummy",
+		bootstrap.PrepareParams{
+			ControllerConfig: testing.FakeControllerConfig(),
+			ControllerName:   "dummycontroller",
+			BaseConfig:       dummy.SampleConfig(),
+			CloudName:        "dummy",
+			AdminSecret:      "admin-secret",
 		},
 	)
 	c.Assert(err, jc.ErrorIsNil)
@@ -74,18 +76,13 @@ func (s *ImportSuite) TestImportModel(c *gc.C) {
 	model, err := s.State.Export()
 	c.Check(err, jc.ErrorIsNil)
 
-	controllerConfig, err := s.State.ModelConfig()
-	c.Check(err, jc.ErrorIsNil)
-
 	// Update the config values in the exported model for different values for
 	// "state-port", "api-port", and "ca-cert". Also give the model a new UUID
 	// and name so we can import it nicely.
+	uuid := utils.MustNewUUID().String()
 	model.UpdateConfig(map[string]interface{}{
-		"name":       "new-model",
-		"uuid":       utils.MustNewUUID().String(),
-		"state-port": 12345,
-		"api-port":   54321,
-		"ca-cert":    "not really a cert",
+		"name": "new-model",
+		"uuid": uuid,
 	})
 
 	bytes, err := description.Serialize(model)
@@ -97,13 +94,8 @@ func (s *ImportSuite) TestImportModel(c *gc.C) {
 
 	dbConfig, err := dbModel.Config()
 	c.Assert(err, jc.ErrorIsNil)
-	attrs := dbConfig.AllAttrs()
-	c.Assert(attrs["state-port"], gc.Equals, controllerConfig.StatePort())
-	c.Assert(attrs["api-port"], gc.Equals, controllerConfig.APIPort())
-	cacert, ok := controllerConfig.CACert()
-	c.Assert(ok, jc.IsTrue)
-	c.Assert(attrs["ca-cert"], gc.Equals, cacert)
-	c.Assert(attrs["controller-uuid"], gc.Equals, controllerConfig.UUID())
+	c.Assert(dbConfig.UUID(), gc.Equals, uuid)
+	c.Assert(dbConfig.Name(), gc.Equals, "new-model")
 }
 
 func (s *ImportSuite) TestUploadBinariesTools(c *gc.C) {
@@ -120,7 +112,7 @@ func (s *ImportSuite) TestUploadBinariesTools(c *gc.C) {
 		Version: version.MustParseBinary("2.0.1-trusty-amd64"),
 	})
 	container := machine.AddContainer(description.MachineArgs{
-		Id: names.NewMachineTag("0/lxc/0"),
+		Id: names.NewMachineTag("0/lxd/0"),
 	})
 	container.SetTools(description.AgentToolsArgs{
 		Version: version.MustParseBinary("2.0.5-trusty-amd64"),
@@ -332,45 +324,6 @@ type fakePrecheckBackend struct {
 
 func (f *fakePrecheckBackend) NeedsCleanup() (bool, error) {
 	return f.cleanupNeeded, f.cleanupError
-}
-
-type InternalSuite struct {
-	testing.BaseSuite
-}
-
-var _ = gc.Suite(&InternalSuite{})
-
-func (s *InternalSuite) TestControllerValues(c *gc.C) {
-	config := testing.ModelConfig(c)
-	fields := migration.ControllerValues(config)
-	c.Assert(fields, jc.DeepEquals, map[string]interface{}{
-		"controller-uuid": config.UUID(),
-		"state-port":      19034,
-		"api-port":        17777,
-		"ca-cert":         testing.CACert,
-	})
-}
-
-func (s *InternalSuite) TestUpdateConfigFromProvider(c *gc.C) {
-	controllerConfig := testing.ModelConfig(c)
-	configAttrs := testing.FakeConfig()
-	configAttrs["type"] = "dummy"
-	// Fake the "state-id" so the provider thinks it is prepared already.
-	configAttrs["state-id"] = "42"
-	// We need to specify a valid provider type, so we use dummy.
-	// The dummy provider grabs the UUID from the controller config
-	// and returns it in the map with the key "controller-uuid", similar
-	// to what the azure provider will need to do.
-	model := description.NewModel(description.ModelArgs{
-		Owner:  names.NewUserTag("test-admin"),
-		Config: configAttrs,
-	})
-
-	err := migration.UpdateConfigFromProvider(model, controllerConfig)
-	c.Assert(err, jc.ErrorIsNil)
-
-	modelConfig := model.Config()
-	c.Assert(modelConfig["controller-uuid"], gc.Equals, controllerConfig.UUID())
 }
 
 type CharmInternalSuite struct {

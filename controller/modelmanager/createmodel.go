@@ -6,13 +6,12 @@
 package modelmanager
 
 import (
-	"fmt"
-
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
 	"github.com/juju/utils"
 	"github.com/juju/version"
 
+	"github.com/juju/juju/controller"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/tools"
@@ -54,6 +53,7 @@ type ModelConfigCreator struct {
 // The config will be validated with the provider before being returned.
 func (c ModelConfigCreator) NewModelConfig(
 	isAdmin bool,
+	controllerUUID string,
 	base *config.Config,
 	attrs map[string]interface{},
 ) (*config.Config, error) {
@@ -90,12 +90,18 @@ func (c ModelConfigCreator) NewModelConfig(
 		}
 		attrs[config.UUIDKey] = uuid.String()
 	}
-	cfg, err := finalizeConfig(isAdmin, base, attrs)
+	cfg, err := finalizeConfig(isAdmin, controllerUUID, base, attrs)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 	attrs = cfg.AllAttrs()
 
+	// TODO(wallyworld) - we need to separate controller and model schemas
+	for _, attr := range controller.ControllerOnlyConfigAttributes {
+		if _, ok := attrs[attr]; ok {
+			return nil, errors.Errorf("unexpected controller attribute %q in model config", attr)
+		}
+	}
 	// Any values that would normally be copied from the controller
 	// config can also be defined, but if they differ from the controller
 	// values, an error is returned.
@@ -168,13 +174,17 @@ func (c *ModelConfigCreator) checkVersion(base *config.Config, attrs map[string]
 
 // RestrictedProviderFields returns the set of config fields that may not be
 // overridden.
+//
+// TODO(axw) restricted config should go away. There should be no provider-
+// specific config, since models should be independent of each other; and
+// anything that should not change across models should be in the controller
+// config.
 func RestrictedProviderFields(providerType string) ([]string, error) {
 	provider, err := environs.Provider(providerType)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 	var fields []string
-	fields = append(fields, config.ControllerOnlyConfigAttributes...)
 	// For now, all models in a controller must be of the same type.
 	fields = append(fields, config.TypeKey)
 	fields = append(fields, provider.RestrictedConfigAttributes()...)
@@ -184,23 +194,25 @@ func RestrictedProviderFields(providerType string) ([]string, error) {
 // finalizeConfig creates the config object from attributes, calls
 // PrepareForCreateEnvironment, and then finally validates the config
 // before returning it.
-func finalizeConfig(isAdmin bool, controllerCfg *config.Config, attrs map[string]interface{}) (*config.Config, error) {
-	provider, err := environs.Provider(controllerCfg.Type())
+func finalizeConfig(isAdmin bool, controllerUUID string, controllerModelCfg *config.Config, attrs map[string]interface{}) (*config.Config, error) {
+	provider, err := environs.Provider(controllerModelCfg.Type())
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 
-	// Controller admins creating models do not have to re-supply new secrets.
-	// These may be copied from the controller model if not supplied.
-	if isAdmin {
-		maybeCopyControllerSecrets(provider, controllerCfg.AllAttrs(), attrs)
-	}
 	cfg, err := config.New(config.UseDefaults, attrs)
 	if err != nil {
 		return nil, errors.Annotate(err, "creating config from values failed")
 	}
 
-	cfg, err = provider.PrepareForCreateEnvironment(cfg)
+	// TODO(wallyworld) - we need to separate controller and model schemas
+	// Remove any remaining controller attributes from the env config.
+	cfg, err = cfg.Remove(controller.ControllerOnlyConfigAttributes)
+	if err != nil {
+		return nil, errors.Annotate(err, "cannot remove controller attributes")
+	}
+
+	cfg, err = provider.PrepareForCreateEnvironment(controllerUUID, cfg)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -209,53 +221,4 @@ func finalizeConfig(isAdmin bool, controllerCfg *config.Config, attrs map[string
 		return nil, errors.Annotate(err, "provider validation failed")
 	}
 	return cfg, nil
-}
-
-// maybeCopyControllerSecrets asks the specified provider for all possible config
-// attributes representing credential values and copies those across from the
-// controller config into the new model's config attrs if not already present.
-func maybeCopyControllerSecrets(provider environs.ProviderCredentials, controllerAttrs, attrs map[string]interface{}) {
-	requiredControllerAttrNames := []string{"authorized-keys"}
-	var controllerCredentialAttrNames []string
-	for _, schema := range provider.CredentialSchemas() {
-		// possibleCredentialValues holds any values from attrs that belong to
-		// the credential schema.
-		possibleCredentialValues := make(map[string]string)
-		for _, attr := range schema {
-			attrName := attr.Name
-			if v, ok := attrs[attrName]; ok && v != "" {
-				possibleCredentialValues[attrName] = fmt.Sprintf("%v", attrs[attrName])
-			}
-			controllerCredentialAttrNames = append(controllerCredentialAttrNames, attrName)
-		}
-		// readFile is not needed server side.
-		readFile := func(string) ([]byte, error) {
-			return nil, errors.NotImplementedf("read file")
-		}
-		// If the user has passed in valid credentials, we'll use
-		// those and not the ones from the controller.
-		if len(possibleCredentialValues) == 0 {
-			continue
-		}
-		finalValues, err := schema.Finalize(possibleCredentialValues, readFile)
-		if err == nil {
-			for k, v := range finalValues {
-				attrs[k] = v
-			}
-			controllerCredentialAttrNames = nil
-			break
-		}
-	}
-
-	// Ensure any required attributes which are empty are copied from the controller config.
-	for _, attrName := range requiredControllerAttrNames {
-		if _, ok := attrs[attrName]; !ok {
-			attrs[attrName] = controllerAttrs[attrName]
-		}
-	}
-	for _, attrName := range controllerCredentialAttrNames {
-		if _, ok := attrs[attrName]; !ok {
-			attrs[attrName] = controllerAttrs[attrName]
-		}
-	}
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/jujuclient"
+	"github.com/juju/juju/testing"
 )
 
 const (
@@ -69,7 +70,7 @@ func NewRestoreCommandForTest(
 	store jujuclient.ClientStore,
 	api RestoreAPI,
 	getArchive func(string) (ArchiveReader, *params.BackupsMetadataResult, error),
-	getEnviron func(string, *params.BackupsMetadataResult) (environs.Environ, error),
+	getEnviron func(string, *params.BackupsMetadataResult) (environs.Environ, *restoreBootstrapParams, error),
 ) cmd.Command {
 	c := &restoreCommand{
 		getArchiveFunc: getArchive,
@@ -81,11 +82,20 @@ func NewRestoreCommandForTest(
 			return nil
 		}}
 	if getEnviron == nil {
-		c.getEnvironFunc = func(controllerNme string, meta *params.BackupsMetadataResult) (environs.Environ, error) {
+		c.getEnvironFunc = func(controllerNme string, meta *params.BackupsMetadataResult) (environs.Environ, *restoreBootstrapParams, error) {
 			return c.getEnviron(controllerNme, meta)
 		}
 	}
 	c.Log = &cmd.Log{}
 	c.SetClientStore(store)
 	return modelcmd.Wrap(c)
+}
+
+func GetEnvironFunc(e environs.Environ, cloud string) func(string, *params.BackupsMetadataResult) (environs.Environ, *restoreBootstrapParams, error) {
+	return func(string, *params.BackupsMetadataResult) (environs.Environ, *restoreBootstrapParams, error) {
+		return e, &restoreBootstrapParams{
+			ControllerConfig: testing.FakeControllerConfig(),
+			CloudName:        cloud,
+		}, nil
+	}
 }

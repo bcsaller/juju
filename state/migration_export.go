@@ -56,6 +56,7 @@ func (st *State) Export() (description.Model, error) {
 
 	args := description.ModelArgs{
 		Cloud:              dbModel.Cloud(),
+		CloudRegion:        dbModel.CloudRegion(),
 		Owner:              dbModel.Owner(),
 		Config:             modelConfig.Settings,
 		LatestToolsVersion: dbModel.LatestToolsVersion(),
@@ -154,8 +155,18 @@ func (e *exporter) modelUsers() error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-
 	for _, user := range users {
+		var access string
+		switch {
+		case user.IsAdmin():
+			access = string(AdminAccess)
+		case user.IsReadWrite():
+			access = string(WriteAccess)
+		default:
+			access = string(ReadAccess)
+
+		}
+
 		lastConn := lastConnections[strings.ToLower(user.UserName())]
 		arg := description.UserArgs{
 			Name:           user.UserTag(),
@@ -163,7 +174,7 @@ func (e *exporter) modelUsers() error {
 			CreatedBy:      names.NewUserTag(user.CreatedBy()),
 			DateCreated:    user.DateCreated(),
 			LastConnection: lastConn,
-			ReadOnly:       user.ReadOnly(),
+			Access:         access,
 		}
 		e.model.AddUser(arg)
 	}
@@ -482,9 +493,14 @@ func (e *exporter) addApplication(application *Application, refcounts map[string
 			return errors.Errorf("missing meter status for unit %s", unit.Name())
 		}
 
+		workloadVersion, err := unit.WorkloadVersion()
+		if err != nil {
+			return errors.Trace(err)
+		}
 		args := description.UnitArgs{
 			Tag:             unit.UnitTag(),
 			Machine:         names.NewMachineTag(unit.doc.MachineId),
+			WorkloadVersion: workloadVersion,
 			PasswordHash:    unit.doc.PasswordHash,
 			MeterStatusCode: unitMeterStatus.Code,
 			MeterStatusInfo: unitMeterStatus.Info,
@@ -498,7 +514,8 @@ func (e *exporter) addApplication(application *Application, refcounts map[string
 			}
 		}
 		exUnit := exApplication.AddUnit(args)
-		// workload uses globalKey, agent uses globalAgentKey.
+		// workload uses globalKey, agent uses globalAgentKey,
+		// workload version uses globalWorkloadVersionKey.
 		globalKey := unit.globalKey()
 		statusArgs, err := e.statusArgs(globalKey)
 		if err != nil {
@@ -506,12 +523,16 @@ func (e *exporter) addApplication(application *Application, refcounts map[string
 		}
 		exUnit.SetWorkloadStatus(statusArgs)
 		exUnit.SetWorkloadStatusHistory(e.statusHistoryArgs(globalKey))
+
 		statusArgs, err = e.statusArgs(agentKey)
 		if err != nil {
 			return errors.Annotatef(err, "agent status for unit %s", unit.Name())
 		}
 		exUnit.SetAgentStatus(statusArgs)
 		exUnit.SetAgentStatusHistory(e.statusHistoryArgs(agentKey))
+
+		workloadVersionKey := unit.globalWorkloadVersionKey()
+		exUnit.SetWorkloadVersionHistory(e.statusHistoryArgs(workloadVersionKey))
 
 		tools, err := unit.AgentTools()
 		if err != nil {
@@ -758,7 +779,10 @@ func (e *exporter) readAllStatusHistory() error {
 	count := 0
 	e.statusHistory = make(map[string][]historicalStatusDoc)
 	var doc historicalStatusDoc
-	iter := statuses.Find(nil).Sort("-updated").Iter()
+	// In tests, sorting by time can leave the results
+	// underconstrained - include document id for deterministic
+	// ordering in those cases.
+	iter := statuses.Find(nil).Sort("-updated", "-_id").Iter()
 	defer iter.Close()
 	for iter.Next(&doc) {
 		history := e.statusHistory[doc.GlobalKey]

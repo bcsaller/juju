@@ -945,6 +945,7 @@ deployment of bundle "local:bundle/example-0" completed`
 func (s *BundleDeployCharmStoreSuite) TestDeployBundleMachinesUnitsPlacement(c *gc.C) {
 	testcharms.UploadCharm(c, s.client, "xenial/wordpress-0", "wordpress")
 	testcharms.UploadCharm(c, s.client, "xenial/mysql-2", "mysql")
+
 	content := `
         applications:
             wp:
@@ -952,14 +953,14 @@ func (s *BundleDeployCharmStoreSuite) TestDeployBundleMachinesUnitsPlacement(c *
                 num_units: 2
                 to:
                     - 1
-                    - lxc:2
+                    - lxd:2
                 options:
                     blog-title: these are the voyages
             sql:
                 charm: cs:xenial/mysql
                 num_units: 2
                 to:
-                    - lxc:wp/0
+                    - lxd:wp/0
                     - new
         machines:
             1:
@@ -976,12 +977,12 @@ application wp deployed (charm cs:xenial/wordpress-0 with the series "xenial" de
 created new machine 0 for holding wp unit
 created new machine 1 for holding wp unit
 added wp/0 unit to machine 0
-created 0/lxc/0 container in machine 0 for holding sql unit
+created 0/lxd/0 container in machine 0 for holding sql unit
 created new machine 2 for holding sql unit
-created 1/lxc/0 container in machine 1 for holding wp unit
-added sql/0 unit to machine 0/lxc/0
+created 1/lxd/0 container in machine 1 for holding wp unit
+added sql/0 unit to machine 0/lxd/0
 added sql/1 unit to machine 2
-added wp/1 unit to machine 1/lxc/0
+added wp/1 unit to machine 1/lxd/0
 deployment of bundle "local:bundle/example-0" completed`
 	c.Assert(output, gc.Equals, strings.TrimSpace(expectedOutput))
 	s.assertApplicationsDeployed(c, map[string]serviceInfo{
@@ -1008,10 +1009,10 @@ deployment of bundle "local:bundle/example-0" completed`
 	// ppc64. Once we switch to go1.6 across the board this change
 	// should be reverted. See http://pad.lv/1556116.
 	expectedUnits := map[string]string{
-		"sql/0": "0/lxc/0",
+		"sql/0": "0/lxd/0",
 		"sql/1": "2",
 		"wp/0":  "0",
-		"wp/1":  "1/lxc/0",
+		"wp/1":  "1/lxd/0",
 	}
 	s.assertUnitsCreated(c, expectedUnits)
 	delete(expectedUnits, "non-existent")
@@ -1032,11 +1033,50 @@ avoid adding new units to application sql: 2 units already present
 deployment of bundle "local:bundle/example-0" completed`
 	c.Assert(output, gc.Equals, strings.TrimSpace(expectedOutput))
 	s.assertUnitsCreated(c, map[string]string{
-		"sql/0": "0/lxc/0",
+		"sql/0": "0/lxd/0",
 		"sql/1": "2",
 		"wp/0":  "0",
-		"wp/1":  "1/lxc/0",
+		"wp/1":  "1/lxd/0",
 	})
+}
+
+func (s *BundleDeployCharmStoreSuite) TestLXCTreatedAsLXD(c *gc.C) {
+	testcharms.UploadCharm(c, s.client, "xenial/wordpress-0", "wordpress")
+
+	// Note that we use lxc here, to represent a 1.x bundle that specifies lxc.
+	content := `
+        applications:
+            wp:
+                charm: cs:xenial/wordpress-0
+                num_units: 1
+                to:
+                    - lxc:0
+                options:
+                    blog-title: these are the voyages
+            wp2:
+                charm: cs:xenial/wordpress-0
+                num_units: 1
+                to:
+                    - lxc:0
+                options:
+                    blog-title: these are the voyages
+        machines:
+            0:
+                series: xenial
+    `
+	output, err := s.DeployBundleYAML(c, content)
+	c.Assert(err, jc.ErrorIsNil)
+	expectedUnits := map[string]string{
+		"wp/0":  "0/lxd/0",
+		"wp2/0": "0/lxd/1",
+	}
+	idx := strings.Index(output, "Bundle has one or more containers specified as lxc. lxc containers are deprecated in Juju 2.0. lxd containers will be deployed instead.")
+	lastIdx := strings.LastIndex(output, "Bundle has one or more containers specified as lxc. lxc containers are deprecated in Juju 2.0. lxd containers will be deployed instead.")
+	// The message exists.
+	c.Assert(idx, jc.GreaterThan, -1)
+	// No more than one instance of the message was printed.
+	c.Assert(idx, gc.Equals, lastIdx)
+	s.assertUnitsCreated(c, expectedUnits)
 }
 
 func (s *BundleDeployCharmStoreSuite) TestDeployBundleMachineAttributes(c *gc.C) {
@@ -1172,8 +1212,8 @@ func (s *BundleDeployCharmStoreSuite) TestDeployBundleUnitColocationWithUnit(c *
                 num_units: 5
                 to:
                     - memcached/0
-                    - lxc:memcached/1
-                    - lxc:memcached/2
+                    - lxd:memcached/1
+                    - lxd:memcached/2
                     - kvm:ror
             ror:
                 charm: rails
@@ -1205,19 +1245,19 @@ added django/1 unit to machine 0/kvm/0
 added memcached/1 unit to machine 1
 added memcached/2 unit to machine 2
 added ror/1 unit to machine 3
-created 1/lxc/0 container in machine 1 for holding django unit
-created 2/lxc/0 container in machine 2 for holding django unit
+created 1/lxd/0 container in machine 1 for holding django unit
+created 2/lxd/0 container in machine 2 for holding django unit
 created 3/kvm/0 container in machine 3 for holding django unit
-added django/2 unit to machine 1/lxc/0
-added django/3 unit to machine 2/lxc/0
+added django/2 unit to machine 1/lxd/0
+added django/3 unit to machine 2/lxd/0
 added django/4 unit to machine 3/kvm/0
 deployment of bundle "local:bundle/example-0" completed`
 	c.Assert(output, gc.Equals, strings.TrimSpace(expectedOutput))
 	s.assertUnitsCreated(c, map[string]string{
 		"django/0":    "0",
 		"django/1":    "0/kvm/0",
-		"django/2":    "1/lxc/0",
-		"django/3":    "2/lxc/0",
+		"django/2":    "1/lxd/0",
+		"django/3":    "2/lxd/0",
 		"django/4":    "3/kvm/0",
 		"memcached/0": "0",
 		"memcached/1": "1",
@@ -1238,9 +1278,9 @@ func (s *BundleDeployCharmStoreSuite) TestDeployBundleUnitPlacedToMachines(c *gc
                     - new
                     - 4
                     - kvm:8
-                    - lxc:4
-                    - lxc:4
-                    - lxc:new
+                    - lxd:4
+                    - lxd:4
+                    - lxd:new
         machines:
             4:
             8:
@@ -1254,26 +1294,26 @@ created new machine 1 for holding django unit
 added django/0 unit to machine 0
 created new machine 2 for holding django unit
 created 1/kvm/0 container in machine 1 for holding django unit
-created 0/lxc/0 container in machine 0 for holding django unit
-created 0/lxc/1 container in machine 0 for holding django unit
-created 3/lxc/0 container in new machine for holding django unit
-created 4/lxc/0 container in new machine for holding django unit
+created 0/lxd/0 container in machine 0 for holding django unit
+created 0/lxd/1 container in machine 0 for holding django unit
+created 3/lxd/0 container in new machine for holding django unit
+created 4/lxd/0 container in new machine for holding django unit
 added django/1 unit to machine 2
 added django/2 unit to machine 1/kvm/0
-added django/3 unit to machine 0/lxc/0
-added django/4 unit to machine 0/lxc/1
-added django/5 unit to machine 3/lxc/0
-added django/6 unit to machine 4/lxc/0
+added django/3 unit to machine 0/lxd/0
+added django/4 unit to machine 0/lxd/1
+added django/5 unit to machine 3/lxd/0
+added django/6 unit to machine 4/lxd/0
 deployment of bundle "local:bundle/example-0" completed`
 	c.Assert(output, gc.Equals, strings.TrimSpace(expectedOutput))
 	s.assertUnitsCreated(c, map[string]string{
 		"django/0": "0",       // Machine "4" in the bundle.
 		"django/1": "2",       // Machine "new" in the bundle.
 		"django/2": "1/kvm/0", // The KVM container in bundle machine "8".
-		"django/3": "0/lxc/0", // First LXC container in bundle machine "4".
-		"django/4": "0/lxc/1", // Second LXC container in bundle machine "4".
-		"django/5": "3/lxc/0", // First LXC in new machine.
-		"django/6": "4/lxc/0", // Second LXC in new machine.
+		"django/3": "0/lxd/0", // First lxd container in bundle machine "4".
+		"django/4": "0/lxd/1", // Second lxd container in bundle machine "4".
+		"django/5": "3/lxd/0", // First lxd in new machine.
+		"django/6": "4/lxd/0", // Second lxd in new machine.
 	})
 }
 
@@ -1292,7 +1332,7 @@ func (s *BundleDeployCharmStoreSuite) TestDeployBundleMassiveUnitColocation(c *g
                 num_units: 4
                 to:
                     - 1
-                    - lxc:memcached
+                    - lxd:memcached
             ror:
                 charm: rails
                 num_units: 3
@@ -1320,23 +1360,23 @@ added memcached/0 unit to machine 0
 added memcached/1 unit to machine 1
 added memcached/2 unit to machine 2
 added ror/0 unit to machine 0
-created 0/lxc/0 container in machine 0 for holding django unit
-created 1/lxc/0 container in machine 1 for holding django unit
-created 2/lxc/0 container in machine 2 for holding django unit
+created 0/lxd/0 container in machine 0 for holding django unit
+created 1/lxd/0 container in machine 1 for holding django unit
+created 2/lxd/0 container in machine 2 for holding django unit
 created 2/kvm/0 container in machine 2 for holding ror unit
 created 2/kvm/1 container in machine 2 for holding ror unit
-added django/1 unit to machine 0/lxc/0
-added django/2 unit to machine 1/lxc/0
-added django/3 unit to machine 2/lxc/0
+added django/1 unit to machine 0/lxd/0
+added django/2 unit to machine 1/lxd/0
+added django/3 unit to machine 2/lxd/0
 added ror/1 unit to machine 2/kvm/0
 added ror/2 unit to machine 2/kvm/1
 deployment of bundle "local:bundle/example-0" completed`
 	c.Assert(output, gc.Equals, strings.TrimSpace(expectedOutput))
 	s.assertUnitsCreated(c, map[string]string{
 		"django/0":    "0",
-		"django/1":    "0/lxc/0",
-		"django/2":    "1/lxc/0",
-		"django/3":    "2/lxc/0",
+		"django/1":    "0/lxd/0",
+		"django/2":    "1/lxd/0",
+		"django/3":    "2/lxd/0",
 		"memcached/0": "0",
 		"memcached/1": "1",
 		"memcached/2": "2",
@@ -1358,12 +1398,12 @@ deployment of bundle "local:bundle/example-0" completed`
                 num_units: 4
                 to:
                     - 1
-                    - lxc:memcached
+                    - lxd:memcached
             node:
                 charm: cs:xenial/django-42
                 num_units: 1
                 to:
-                    - lxc:memcached
+                    - lxd:memcached
         machines:
             1:
             2:
@@ -1380,8 +1420,8 @@ application node deployed (charm cs:xenial/django-42 with the series "xenial" de
 avoid creating other machines to host django and memcached units
 avoid adding new units to application django: 4 units already present
 avoid adding new units to application memcached: 3 units already present
-created 1/lxc/1 container in machine 1 for holding node unit
-added node/0 unit to machine 1/lxc/1
+created 1/lxd/1 container in machine 1 for holding node unit
+added node/0 unit to machine 1/lxd/1
 deployment of bundle "local:bundle/example-0" completed`
 	c.Assert(output, gc.Equals, strings.TrimSpace(expectedOutput))
 
@@ -1403,13 +1443,13 @@ deployment of bundle "local:bundle/example-0" completed`
 	c.Assert(output, gc.Equals, strings.TrimSpace(expectedOutput))
 	s.assertUnitsCreated(c, map[string]string{
 		"django/0":    "0",
-		"django/1":    "0/lxc/0",
-		"django/2":    "1/lxc/0",
-		"django/3":    "2/lxc/0",
+		"django/1":    "0/lxd/0",
+		"django/2":    "1/lxd/0",
+		"django/3":    "2/lxd/0",
 		"memcached/0": "0",
 		"memcached/1": "1",
 		"memcached/2": "2",
-		"node/0":      "1/lxc/1",
+		"node/0":      "1/lxd/1",
 		"ror/0":       "0",
 		"ror/1":       "2/kvm/0",
 		"ror/2":       "2/kvm/1",

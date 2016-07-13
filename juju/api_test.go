@@ -17,6 +17,7 @@ import (
 	"gopkg.in/juju/names.v2"
 
 	"github.com/juju/juju/api"
+	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/bootstrap"
@@ -26,6 +27,7 @@ import (
 	envtesting "github.com/juju/juju/environs/testing"
 	envtools "github.com/juju/juju/environs/tools"
 	"github.com/juju/juju/juju"
+	"github.com/juju/juju/juju/keys"
 	jujutesting "github.com/juju/juju/juju/testing"
 	"github.com/juju/juju/jujuclient"
 	"github.com/juju/juju/jujuclient/jujuclienttesting"
@@ -46,7 +48,7 @@ var _ = gc.Suite(&NewAPIClientSuite{})
 func (cs *NewAPIClientSuite) SetUpSuite(c *gc.C) {
 	cs.FakeJujuXDGDataHomeSuite.SetUpSuite(c)
 	cs.MgoSuite.SetUpSuite(c)
-	cs.PatchValue(&juju.JujuPublicKey, sstesting.SignedMetadataPublicKey)
+	cs.PatchValue(&keys.JujuPublicKey, sstesting.SignedMetadataPublicKey)
 	// Since most tests use invalid testing API server addresses, we
 	// need to mock this to avoid errors.
 	cs.PatchValue(juju.ServerAddress, func(addr string) (network.HostPort, error) {
@@ -89,10 +91,12 @@ func (s *NewAPIClientSuite) bootstrapModel(c *gc.C) (environs.Environ, jujuclien
 
 	ctx := envtesting.BootstrapContext(c)
 
-	env, err := environs.Prepare(ctx, store, environs.PrepareParams{
-		ControllerName: controllerName,
-		BaseConfig:     dummy.SampleConfig(),
-		CloudName:      "dummy",
+	env, err := bootstrap.Prepare(ctx, store, bootstrap.PrepareParams{
+		ControllerConfig: coretesting.FakeControllerConfig(),
+		ControllerName:   controllerName,
+		BaseConfig:       dummy.SampleConfig(),
+		CloudName:        "dummy",
+		AdminSecret:      "admin-secret",
 	})
 	c.Assert(err, jc.ErrorIsNil)
 
@@ -102,7 +106,16 @@ func (s *NewAPIClientSuite) bootstrapModel(c *gc.C) (environs.Environ, jujuclien
 	c.Assert(err, jc.ErrorIsNil)
 	envtesting.UploadFakeTools(c, stor, "released", "released")
 
-	err = bootstrap.Bootstrap(ctx, env, bootstrap.BootstrapParams{})
+	err = bootstrap.Bootstrap(ctx, env, bootstrap.BootstrapParams{
+		ControllerConfig: coretesting.FakeControllerConfig(),
+		CloudName:        "dummy",
+		Cloud: cloud.Cloud{
+			Type:      "dummy",
+			AuthTypes: []cloud.AuthType{cloud.EmptyAuthType},
+		},
+		AdminSecret:  "admin-secret",
+		CAPrivateKey: coretesting.CAKey,
+	})
 	c.Assert(err, jc.ErrorIsNil)
 
 	return env, store
@@ -178,40 +191,54 @@ func (s *NewAPIClientSuite) TestWithInfoNoAddresses(c *gc.C) {
 	c.Assert(st, gc.IsNil)
 }
 
-type mockedStateFlags int
+func (s *NewAPIClientSuite) TestWithRedirect(c *gc.C) {
+	store := newClientStore(c, "ctl")
+	err := store.UpdateController("ctl", jujuclient.ControllerDetails{
+		ControllerUUID: fakeUUID,
+		CACert:         "certificate",
+		APIEndpoints:   []string{"0.1.2.3:5678"},
+	})
+	c.Assert(err, jc.ErrorIsNil)
 
-const (
-	noFlags        mockedStateFlags = 0x0000
-	mockedHostPort mockedStateFlags = 0x0001
-	mockedModelTag mockedStateFlags = 0x0002
-)
+	controllerBefore, err := store.ControllerByName("ctl")
+	c.Assert(err, jc.ErrorIsNil)
 
-func mockedAPIState(flags mockedStateFlags) *mockAPIState {
-	hasHostPort := flags&mockedHostPort == mockedHostPort
-	hasModelTag := flags&mockedModelTag == mockedModelTag
-	addr := ""
-
-	apiHostPorts := [][]network.HostPort{}
-	if hasHostPort {
-		var apiAddrs []network.Address
-		ipv4Address := network.NewAddress("0.1.2.3")
-		ipv6Address := network.NewAddress("2001:db8::1")
-		addr = net.JoinHostPort(ipv4Address.Value, "1234")
-		apiAddrs = append(apiAddrs, ipv4Address, ipv6Address)
-		apiHostPorts = [][]network.HostPort{
-			network.AddressesWithPort(apiAddrs, 1234),
+	redirHPs := []string{"0.0.9.9:1234", "0.0.9.10:1235"}
+	openCount := 0
+	redirOpen := func(apiInfo *api.Info, opts api.DialOpts) (api.Connection, error) {
+		c.Check(apiInfo.ModelTag.Id(), gc.Equals, fakeUUID)
+		openCount++
+		switch openCount {
+		case 1:
+			c.Check(apiInfo.Addrs, jc.DeepEquals, []string{"0.1.2.3:5678"})
+			c.Check(apiInfo.CACert, gc.Equals, "certificate")
+			return nil, errors.Trace(&api.RedirectError{
+				Servers: [][]network.HostPort{mustParseHostPorts(redirHPs)},
+				CACert:  "alternative CA cert",
+			})
+		case 2:
+			c.Check(apiInfo.Addrs, jc.DeepEquals, []string{"0.0.9.9:1234", "0.0.9.10:1235"})
+			c.Check(apiInfo.CACert, gc.Equals, "alternative CA cert")
+			st := mockedAPIState(noFlags)
+			st.apiHostPorts = [][]network.HostPort{mustParseHostPorts(redirHPs)}
+			st.modelTag = fakeUUID
+			return st, nil
 		}
+		c.Errorf("OpenAPI called too many times")
+		return nil, fmt.Errorf("OpenAPI called too many times")
 	}
-	modelTag := ""
-	if hasModelTag {
-		modelTag = "model-df136476-12e9-11e4-8a70-b2227cce2b54"
-	}
-	return &mockAPIState{
-		apiHostPorts:  apiHostPorts,
-		modelTag:      modelTag,
-		controllerTag: modelTag,
-		addr:          addr,
-	}
+
+	st0, err := newAPIConnectionFromNames(c, "ctl", "admin@local", "admin", store, redirOpen, noBootstrapConfig)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(openCount, gc.Equals, 2)
+	st := st0.(*mockAPIState)
+	c.Assert(st.modelTag, gc.Equals, fakeUUID)
+
+	// Check that the addresses of the original controller
+	// have not been changed.
+	controllerAfter, err := store.ControllerByName("ctl")
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(controllerBefore, gc.DeepEquals, controllerAfter)
 }
 
 func checkCommonAPIInfoAttrs(c *gc.C, apiInfo *api.Info, opts api.DialOpts) {
@@ -230,7 +257,7 @@ func (s *NewAPIClientSuite) TestWithInfoAPIOpenError(c *gc.C) {
 	st, err := newAPIConnectionFromNames(c, "noconfig", "", "", jujuClient, apiOpen, noBootstrapConfig)
 	// We expect to get the error from apiOpen, because it is not
 	// fatal to have no bootstrap config.
-	c.Assert(err, gc.ErrorMatches, "connecting with cached addresses: an error")
+	c.Assert(err, gc.ErrorMatches, "an error")
 	c.Assert(st, gc.IsNil)
 }
 
@@ -302,7 +329,7 @@ func (s *NewAPIClientSuite) TestWithSlowConfigConnect(c *gc.C) {
 	s.PatchValue(&jujuversion.Current, coretesting.FakeVersionNumber)
 
 	_, store := s.bootstrapModel(c)
-	setEndpointAddressAndHostname(c, store, "0.1.2.3", "infoapi.invalid")
+	setEndpointAddressAndHostname(c, store, "0.1.2.3:1234", "infoapi.invalid")
 
 	infoOpenedState := mockedAPIState(noFlags)
 	infoEndpointOpened := make(chan struct{})
@@ -311,7 +338,7 @@ func (s *NewAPIClientSuite) TestWithSlowConfigConnect(c *gc.C) {
 
 	s.PatchValue(juju.ProviderConnectDelay, 0*time.Second)
 	apiOpen := func(info *api.Info, opts api.DialOpts) (api.Connection, error) {
-		if info.Addrs[0] == "0.1.2.3" {
+		if info.Addrs[0] == "0.1.2.3:1234" {
 			infoEndpointOpened <- struct{}{}
 			<-infoEndpointOpened
 			return infoOpenedState, nil
@@ -351,7 +378,7 @@ func (s *NewAPIClientSuite) TestWithSlowConfigConnect(c *gc.C) {
 		c.Fatalf("api never opened via config")
 	}
 	// Let the info endpoint open go ahead and
-	// check that the NewAPIFromStore call returns.
+	// check that the NewAPIConnection call returns.
 	infoEndpointOpened <- struct{}{}
 	select {
 	case <-done:
@@ -373,7 +400,7 @@ func (s *NewAPIClientSuite) TestWithSlowConfigConnect(c *gc.C) {
 func (s *NewAPIClientSuite) TestBothError(c *gc.C) {
 	s.PatchValue(&jujuversion.Current, coretesting.FakeVersionNumber)
 	env, store := s.bootstrapModel(c)
-	setEndpointAddressAndHostname(c, store, "0.1.2.3", "infoapi.invalid")
+	setEndpointAddressAndHostname(c, store, "0.1.2.3:1234", "infoapi.invalid")
 
 	getBootstrapConfig := func(string) (*config.Config, error) {
 		return env.Config(), nil
@@ -381,6 +408,7 @@ func (s *NewAPIClientSuite) TestBothError(c *gc.C) {
 
 	s.PatchValue(juju.ProviderConnectDelay, 0*time.Second)
 	apiOpen := func(info *api.Info, opts api.DialOpts) (api.Connection, error) {
+		c.Logf("apiOpen addrs %#v", info.Addrs)
 		if info.Addrs[0] == "infoapi.invalid" {
 			return nil, fmt.Errorf("info connect failed")
 		}
@@ -398,7 +426,7 @@ func newClientStore(c *gc.C, controllerName string) *jujuclienttesting.MemStore 
 	err := store.UpdateController(controllerName, jujuclient.ControllerDetails{
 		ControllerUUID: fakeUUID,
 		CACert:         "certificate",
-		APIEndpoints:   []string{"foo.invalid"},
+		APIEndpoints:   []string{"0.1.2.3:5678"},
 	})
 	c.Assert(err, jc.ErrorIsNil)
 
@@ -814,6 +842,7 @@ func newAPIConnectionFromNames(
 		ControllerName:  controller,
 		BootstrapConfig: getBootstrapConfig,
 		DialOpts:        api.DefaultDialOpts(),
+		OpenAPI:         apiOpen,
 	}
 	if account != "" {
 		accountDetails, err := store.AccountByName(controller, account)
@@ -825,5 +854,13 @@ func newAPIConnectionFromNames(
 		c.Assert(err, jc.ErrorIsNil)
 		params.ModelUUID = modelDetails.ModelUUID
 	}
-	return juju.NewAPIFromStore(params, apiOpen)
+	return juju.NewAPIConnection(params)
+}
+
+func mustParseHostPorts(ss []string) []network.HostPort {
+	hps, err := network.ParseHostPorts(ss...)
+	if err != nil {
+		panic(err)
+	}
+	return hps
 }

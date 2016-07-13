@@ -181,7 +181,7 @@ func (s *SubnetsSuite) TestAllZonesWithNoBackingZonesAndModelConfigFails(c *gc.C
 
 	results, err := networkingcommon.AllZones(apiservertesting.BackingInstance)
 	c.Assert(err, gc.ErrorMatches,
-		`cannot update known zones: getting model config: config not found`,
+		`cannot update known zones: opening environment: config not found`,
 	)
 	// Verify the cause is not obscured.
 	c.Assert(err, jc.Satisfies, errors.IsNotFound)
@@ -209,7 +209,7 @@ func (s *SubnetsSuite) TestAllZonesWithNoBackingZonesAndOpenFails(c *gc.C) {
 
 	results, err := networkingcommon.AllZones(apiservertesting.BackingInstance)
 	c.Assert(err, gc.ErrorMatches,
-		`cannot update known zones: opening model: config not valid`,
+		`cannot update known zones: opening environment: config not valid`,
 	)
 	// Verify the cause is not obscured.
 	c.Assert(err, jc.Satisfies, errors.IsNotValid)
@@ -433,8 +433,8 @@ func (s *SubnetsSuite) TestAddSubnetsParamsCombinations(c *gc.C) {
 		{"either SubnetTag or SubnetProviderId is required", nil},
 		{"either SubnetTag or SubnetProviderId is required", nil},
 		{"SubnetTag and SubnetProviderId cannot be both set", nil},
-		{"getting model config: config not found", params.IsCodeNotFound},
-		{"opening model: provider not found", params.IsCodeNotFound},
+		{"opening environment: config not found", params.IsCodeNotFound},
+		{"opening environment: provider not found", params.IsCodeNotFound},
 		{"cannot get provider subnets: subnets not found", params.IsCodeNotFound},
 		{`subnet with CIDR "" and ProviderId "missing" not found`, params.IsCodeNotFound},
 		{`subnet with CIDR "" and ProviderId "void" not found`, params.IsCodeNotFound},
@@ -474,24 +474,18 @@ func (s *SubnetsSuite) TestAddSubnetsParamsCombinations(c *gc.C) {
 		ProviderId:        "sn-ipv6",
 		CIDR:              "2001:db8::/32",
 		VLANTag:           0,
-		AllocatableIPHigh: "",
-		AllocatableIPLow:  "",
 		AvailabilityZones: []string{"zone1"},
 		SpaceName:         "dmz",
 	}, {
 		ProviderId:        "vlan-42",
 		CIDR:              "10.30.1.0/24",
 		VLANTag:           42,
-		AllocatableIPHigh: "",
-		AllocatableIPLow:  "",
 		AvailabilityZones: []string{"zone3"},
 		SpaceName:         "private",
 	}, {
 		ProviderId:        "sn-zadf00d",
 		CIDR:              "10.10.0.0/24",
 		VLANTag:           0,
-		AllocatableIPHigh: "10.10.0.100",
-		AllocatableIPLow:  "10.10.0.10",
 		AvailabilityZones: []string{"zone1"},
 		SpaceName:         "private",
 	}}
@@ -541,7 +535,7 @@ func (s *SubnetsSuite) TestAddSubnetsParamsCombinations(c *gc.C) {
 		apiservertesting.BackingCall("AllSpaces"),
 		apiservertesting.BackingCall("AllSpaces"),
 
-		// cacing zones (1st and 2nd attempts)
+		// caching zones (1st and 2nd attempts)
 		apiservertesting.BackingCall("AvailabilityZones"),
 		apiservertesting.BackingCall("AvailabilityZones"),
 

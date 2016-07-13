@@ -92,9 +92,8 @@ func (api *API) Deploy(args params.ApplicationsDeploy) (params.ErrorResults, err
 	if err := api.check.ChangeAllowed(); err != nil {
 		return result, errors.Trace(err)
 	}
-	owner := api.authorizer.GetAuthTag().String()
 	for i, arg := range args.Applications {
-		err := deployApplication(api.state, owner, arg)
+		err := deployApplication(api.state, arg)
 		result.Results[i].Error = common.ServerError(err)
 	}
 	return result, nil
@@ -103,7 +102,7 @@ func (api *API) Deploy(args params.ApplicationsDeploy) (params.ErrorResults, err
 // deployApplication fetches the charm from the charm store and deploys it.
 // The logic has been factored out into a common function which is called by
 // both the legacy API on the client facade, as well as the new application facade.
-func deployApplication(st *state.State, owner string, args params.ApplicationDeploy) error {
+func deployApplication(st *state.State, args params.ApplicationDeploy) error {
 	curl, err := charm.ParseURL(args.CharmUrl)
 	if err != nil {
 		return errors.Trace(err)
@@ -125,18 +124,6 @@ func deployApplication(st *state.State, owner string, args params.ApplicationDep
 
 	// Try to find the charm URL in state first.
 	ch, err := st.Charm(curl)
-	// TODO(wallyworld) - remove for 2.0 beta4
-	if errors.IsNotFound(err) {
-		// Clients written to expect 1.16 compatibility require this next block.
-		if curl.Schema != "cs" {
-			return errors.Errorf(`charm url has unsupported schema %q`, curl.Schema)
-		}
-		if err = AddCharmWithAuthorization(st, params.AddCharmWithAuthorization{
-			URL: args.CharmUrl,
-		}); err == nil {
-			ch, err = st.Charm(curl)
-		}
-	}
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -160,10 +147,8 @@ func deployApplication(st *state.State, owner string, args params.ApplicationDep
 
 	_, err = jjj.DeployApplication(st,
 		jjj.DeployApplicationParams{
-			ApplicationName: args.ApplicationName,
-			Series:          args.Series,
-			// TODO(dfc) ApplicationOwner should be a tag
-			ApplicationOwner: owner,
+			ApplicationName:  args.ApplicationName,
+			Series:           args.Series,
 			Charm:            ch,
 			Channel:          channel,
 			NumUnits:         args.NumUnits,
@@ -560,13 +545,20 @@ func (api *API) AddRelation(args params.AddRelation) (params.AddRelationResults,
 	if err != nil {
 		return params.AddRelationResults{}, err
 	}
-	outEps := make(map[string]charm.Relation)
+	outEps := make(map[string]params.CharmRelation)
 	for _, inEp := range inEps {
 		outEp, err := rel.Endpoint(inEp.ApplicationName)
 		if err != nil {
 			return params.AddRelationResults{}, err
 		}
-		outEps[inEp.ApplicationName] = outEp.Relation
+		outEps[inEp.ApplicationName] = params.CharmRelation{
+			Name:      outEp.Relation.Name,
+			Role:      string(outEp.Relation.Role),
+			Interface: outEp.Relation.Interface,
+			Optional:  outEp.Relation.Optional,
+			Limit:     outEp.Relation.Limit,
+			Scope:     string(outEp.Relation.Scope),
+		}
 	}
 	return params.AddRelationResults{Endpoints: outEps}, nil
 }

@@ -403,6 +403,7 @@ var commandNames = []string{
 	"get-config",
 	"get-configs",
 	"get-constraints",
+	"get-controller-config",
 	"get-model-config",
 	"get-model-constraints",
 	"grant",
@@ -442,6 +443,7 @@ var commandNames = []string{
 	"plans",
 	"publish",
 	"register",
+	"relate", //alias for add-relation
 	"remove-all-blocks",
 	"remove-application", // alias for destroy-application
 	"remove-backup",
@@ -500,6 +502,7 @@ var commandNames = []string{
 	"unexpose",
 	"update-allocation",
 	"upload-backup",
+	"unregister",
 	"unset-model-config",
 	"update-clouds",
 	"upgrade-charm",
@@ -681,9 +684,12 @@ func (s *MainSuite) TestAllCommandsPurposeDocCapitalization(c *gc.C) {
 		}
 
 		c.Check(purpose, gc.Not(gc.Equals), "", comment("has empty Purpose"))
-		// TODO (cherylj) Add back in the check for capitalization of
-		// purpose, but check for upper case.  This requires all commands
-		// to have been updated first.
+		if purpose != "" {
+			prefix := string(purpose[0])
+			c.Check(prefix, gc.Equals, strings.ToUpper(prefix),
+				comment("expected uppercase first-letter Purpose"),
+			)
+		}
 		if doc != "" && !strings.HasPrefix(doc, info.Name) {
 			prefix := string(doc[0])
 			c.Check(prefix, gc.Equals, strings.ToUpper(prefix),

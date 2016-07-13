@@ -25,6 +25,8 @@ import (
 	"github.com/juju/juju/worker/gate"
 	"github.com/juju/juju/worker/hostkeyreporter"
 	"github.com/juju/juju/worker/identityfilewriter"
+	"github.com/juju/juju/worker/logforwarder"
+	"github.com/juju/juju/worker/logforwarder/sinks"
 	"github.com/juju/juju/worker/logger"
 	"github.com/juju/juju/worker/logsender"
 	"github.com/juju/juju/worker/machineactions"
@@ -287,8 +289,10 @@ func Manifolds(config ManifoldsConfig) dependency.Manifolds {
 		// machine when requested. It needs an API connection and
 		// waits for upgrades to be complete.
 		rebootName: ifFullyUpgraded(reboot.Manifold(reboot.ManifoldConfig{
-			AgentName:     agentName,
-			APICallerName: apiCallerName,
+			AgentName:       agentName,
+			APICallerName:   apiCallerName,
+			MachineLockName: coreagent.MachineLockName,
+			Clock:           config.Clock,
 		})),
 
 		// The logging config updater is a leaf worker that indirectly
@@ -397,6 +401,14 @@ func Manifolds(config ManifoldsConfig) dependency.Manifolds {
 			NewFacade:     hostkeyreporter.NewFacade,
 			NewWorker:     hostkeyreporter.NewWorker,
 		})),
+		logForwarderName: ifFullyUpgraded(logforwarder.Manifold(logforwarder.ManifoldConfig{
+			StateName:     stateName,
+			APICallerName: apiCallerName,
+			Sinks: []logforwarder.LogSinkSpec{{
+				Name:   "juju-log-forward",
+				OpenFn: sinks.OpenSyslog,
+			}},
+		})),
 	}
 }
 
@@ -443,4 +455,5 @@ const (
 	apiConfigWatcherName     = "api-config-watcher"
 	machineActionName        = "machine-action-runner"
 	hostKeyReporterName      = "host-key-reporter"
+	logForwarderName         = "log-forwarder"
 )

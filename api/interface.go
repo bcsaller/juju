@@ -12,7 +12,6 @@ import (
 	"gopkg.in/macaroon-bakery.v1/httpbakery"
 	"gopkg.in/macaroon.v1"
 
-	"github.com/juju/juju/api/addresser"
 	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/api/charmrevisionupdater"
 	"github.com/juju/juju/api/cleaner"
@@ -27,6 +26,7 @@ import (
 	"github.com/juju/juju/api/upgrader"
 	"github.com/juju/juju/network"
 	"github.com/juju/juju/rpc"
+	"github.com/juju/utils/set"
 )
 
 // Info encapsulates information about a server holding juju state and
@@ -71,10 +71,27 @@ type Info struct {
 	Nonce string `yaml:",omitempty"`
 }
 
+// Ports returns the unique ports for the api addresses.
+func (info *Info) Ports() []int {
+	ports := set.NewInts()
+	hostPorts, err := network.ParseHostPorts(info.Addrs...)
+	if err != nil {
+		// Addresses have already been validated.
+		panic(err)
+	}
+	for _, hp := range hostPorts {
+		ports.Add(hp.Port)
+	}
+	return ports.Values()
+}
+
 // Validate validates the API info.
 func (info *Info) Validate() error {
 	if len(info.Addrs) == 0 {
 		return errors.NotValidf("missing addresses")
+	}
+	if _, err := network.ParseHostPorts(info.Addrs...); err != nil {
+		return errors.NotValidf("host addresses: %v", err)
 	}
 	if info.CACert == "" {
 		return errors.NotValidf("missing CA certificate")
@@ -184,6 +201,10 @@ type Connection interface {
 	// connection.
 	AuthTag() names.Tag
 
+	// ReadOnly returns whether the authorized user is connected to the model
+	// in read-only mode.
+	ReadOnly() bool
+
 	// These methods expose a bunch of worker-specific facades, and basically
 	// just should not exist; but removing them is too noisy for a single CL.
 	// Client in particular is intimately coupled with State -- and the others
@@ -195,7 +216,6 @@ type Connection interface {
 	Firewaller() *firewaller.State
 	Upgrader() *upgrader.State
 	Reboot() (reboot.State, error)
-	Addresser() *addresser.API
 	DiscoverSpaces() *discoverspaces.API
 	InstancePoller() *instancepoller.API
 	CharmRevisionUpdater() *charmrevisionupdater.State

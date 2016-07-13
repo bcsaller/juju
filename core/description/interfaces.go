@@ -37,6 +37,8 @@ type Model interface {
 	HasConstraints
 
 	Cloud() string
+	CloudRegion() string
+	CloudCredential() string
 	Tag() names.ModelTag
 	Owner() names.UserTag
 	Config() map[string]interface{}
@@ -75,7 +77,9 @@ type User interface {
 	CreatedBy() names.UserTag
 	DateCreated() time.Time
 	LastConnection() time.Time
-	ReadOnly() bool
+	IsReadOnly() bool
+	IsReadWrite() bool
+	IsAdmin() bool
 }
 
 // Address represents an IP Address of some form.
@@ -263,6 +267,11 @@ type Unit interface {
 
 	WorkloadStatusHistory() []Status
 	SetWorkloadStatusHistory([]StatusArgs)
+
+	WorkloadVersion() string
+
+	WorkloadVersionHistory() []Status
+	SetWorkloadVersionHistory([]StatusArgs)
 
 	AgentStatus() Status
 	SetAgentStatus(StatusArgs)
